@@ -1,7 +1,7 @@
-Efficient Piecewise Training of Deep Structured Models for Semantic Segmentation
+# Efficient Piecewise Training of Deep Structured Models for Semantic Segmentation
 This repository contains a from-scratch implementation of the CVPR 2016 paper "Efficient Piecewise Training of Deep Structured Models for Semantic Segmentation" by Lin et al.
 
-Overview
+# Overview
 
 The paper introduces a novel piecewise training approach for combining Convolutional Neural Networks (CNNs) with Conditional Random Fields (CRFs) for semantic segmentation. The key innovation is training the model in three stages:
 Stage 1: Train the unary potential network (CNN) independently
@@ -9,7 +9,7 @@ Stage 2: Fix the unary network and train CRF parameters
 Stage 3: Fine-tune the entire model end-to-end
 This approach is more efficient than joint training and produces better results than training components separately.
 
-Key Features
+# Key Features
 
 DeepLab-style backbone with dilated convolutions for dense prediction
 Differentiable Dense CRF layer with learnable parameters
@@ -18,13 +18,12 @@ Comprehensive metrics including mIoU, pixel accuracy, and per-class IoU
 Multiple loss functions (Cross-Entropy, Dice, Focal, Structured)
 Efficient bilateral filtering for CRF message passing
 
-Installation
-bash
+# Installation
 pip install torch torchvision numpy pillow matplotlib tqdm
 
-Usage
+# Usage
 
-Training
+# Training
 from src.piecewise_training.model import PiecewiseTrainedModel
 from src.piecewise_training.trainer import PiecewiseTrainer
 
@@ -47,7 +46,7 @@ history = trainer.train_piecewise(
     stage3_epochs=10,
     val_loader=val_loader
 )
-Inference
+# Inference
 
 from src.piecewise_training.model import PiecewiseTrainedModel
 
@@ -59,7 +58,7 @@ with torch.no_grad():
     unary_output, crf_output = model(image, apply_crf=True)
     prediction = crf_output.argmax(dim=1)
 
-Architecture
+# Architecture
 
 Unary Network (DeepLab-style)
 VGG-16 inspired backbone with dilated convolutions
