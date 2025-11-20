@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from typing import Dict, Optional, Callable
 import numpy as np
 from tqdm import tqdm
+from src.piecewise_training.losses import StructuredLoss
 
 
 class PiecewiseTrainer:
@@ -30,8 +31,9 @@ class PiecewiseTrainer:
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
-        # Loss function
-        self.criterion = nn.CrossEntropyLoss(ignore_index=255)
+        # ✅ Use different losses for different stages
+        self.unary_criterion = nn.CrossEntropyLoss(ignore_index=255)  # Stage 1
+        self.structured_criterion = StructuredLoss(num_classes=num_classes)  # Stage 2 & 3
         
     def _get_optimizer(self, parameters, lr: Optional[float] = None):
         """Create optimizer for given parameters."""
@@ -43,6 +45,7 @@ class PiecewiseTrainer:
             momentum=0.9,
             weight_decay=self.weight_decay
         )
+    
     
     def train_stage1_unary(
         self,
@@ -81,8 +84,8 @@ class PiecewiseTrainer:
                 # Forward pass (unary only)
                 unary_output, _ = self.model(images, apply_crf=False)
                 
-                # Compute loss
-                loss = self.criterion(unary_output, labels)
+                # ✅ Use unary_criterion (not criterion!)
+                loss = self.unary_criterion(unary_output, labels)
                 
                 # Backward pass
                 loss.backward()
@@ -100,14 +103,15 @@ class PiecewiseTrainer:
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
-                      f"Val Loss={val_metrics['loss']:.4f}, "
-                      f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val Loss={val_metrics['loss']:.4f}, "
+                    f"Val mIoU={val_metrics['miou']:.4f}")
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
             
             scheduler.step()
         
         return history
+    
     
     def train_stage2_crf(
         self,
@@ -116,9 +120,9 @@ class PiecewiseTrainer:
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
         """
-        Stage 2: Fix unary network, train CRF parameters.
+        Stage 2: Fix unary network, train CRF parameters with structured loss.
         """
-        print("\nStage 2: Training CRF Parameters")
+        print("\nStage 2: Training CRF Parameters with Structured Loss")
         
         if not hasattr(self.model, 'crf'):
             print("Model has no CRF, skipping stage 2")
@@ -152,10 +156,10 @@ class PiecewiseTrainer:
                 optimizer.zero_grad()
                 
                 # Forward pass with CRF
-                _, crf_output = self.model(images, apply_crf=True)
+                unary_output, crf_output = self.model(images, apply_crf=True)
                 
-                # Compute loss on CRF output
-                loss = self.criterion(crf_output, labels)
+                # ✅ Use structured loss (not CrossEntropy!)
+                loss = self.structured_criterion(unary_output, crf_output, labels)
                 
                 # Backward pass
                 loss.backward()
@@ -173,12 +177,13 @@ class PiecewiseTrainer:
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
-                      f"Val Loss={val_metrics['loss']:.4f}, "
-                      f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val Loss={val_metrics['loss']:.4f}, "
+                    f"Val mIoU={val_metrics['miou']:.4f}")
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
         
         return history
+    
     
     def train_stage3_joint(
         self,
@@ -187,9 +192,9 @@ class PiecewiseTrainer:
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
         """
-        Stage 3: Fine-tune entire model end-to-end.
+        Stage 3: Fine-tune entire model end-to-end with structured loss.
         """
-        print("\nStage 3: Joint Fine-tuning")
+        print("\nStage 3: Joint Fine-tuning with Structured Loss")
         
         # Unfreeze all parameters
         for param in self.model.parameters():
@@ -218,13 +223,11 @@ class PiecewiseTrainer:
                 # Forward pass with CRF
                 unary_output, crf_output = self.model(images, apply_crf=True)
                 
-                # Combined loss (unary + CRF)
-                loss_unary = self.criterion(unary_output, labels)
+                # ✅ Use structured loss for joint training
                 if crf_output is not None:
-                    loss_crf = self.criterion(crf_output, labels)
-                    loss = 0.5 * loss_unary + 0.5 * loss_crf
+                    loss = self.structured_criterion(unary_output, crf_output, labels)
                 else:
-                    loss = loss_unary
+                    loss = self.unary_criterion(unary_output, labels)
                 
                 # Backward pass
                 loss.backward()
@@ -242,14 +245,15 @@ class PiecewiseTrainer:
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
-                      f"Val Loss={val_metrics['loss']:.4f}, "
-                      f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val Loss={val_metrics['loss']:.4f}, "
+                    f"Val mIoU={val_metrics['miou']:.4f}")
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
             
             scheduler.step()
         
         return history
+    
     
     def validate(
         self,
@@ -270,8 +274,8 @@ class PiecewiseTrainer:
                 unary_output, crf_output = self.model(images, apply_crf=use_crf)
                 output = crf_output if (use_crf and crf_output is not None) else unary_output
                 
-                # Compute loss
-                loss = self.criterion(output, labels)
+                # ✅ Use unary_criterion for validation
+                loss = self.unary_criterion(output, labels)
                 total_loss += loss.item()
                 
                 # Compute confusion matrix

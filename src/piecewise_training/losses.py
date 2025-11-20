@@ -5,88 +5,96 @@ import torch.nn.functional as F
 
 class StructuredLoss(nn.Module):
     """
-    Structured loss combining unary and pairwise terms.
-    Implements the loss function from the paper.
+    Structured loss implementing Equation 5 from the paper.
+    Combines unary loss, pairwise smoothness, and structured hinge loss.
     """
     def __init__(
-        self,
-        num_classes: int,
-        unary_weight: float = 1.0,
-        pairwise_weight: float = 0.1,
+        self, 
+        num_classes: int, 
+        margin: float = 1.0,
         ignore_index: int = 255
     ):
         super().__init__()
         self.num_classes = num_classes
-        self.unary_weight = unary_weight
-        self.pairwise_weight = pairwise_weight
+        self.margin = margin
         self.ignore_index = ignore_index
-        
         self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
     
     def forward(
-        self,
-        unary_output: torch.Tensor,
-        crf_output: torch.Tensor,
-        target: torch.Tensor,
-        image: torch.Tensor
+        self, 
+        unary: torch.Tensor, 
+        crf_output: torch.Tensor, 
+        target: torch.Tensor
     ) -> torch.Tensor:
         """
         Compute structured loss.
         
         Args:
-            unary_output: Unary predictions [B, C, H, W]
+            unary: Unary predictions [B, C, H, W]
             crf_output: CRF refined predictions [B, C, H, W]
             target: Ground truth labels [B, H, W]
-            image: Input image [B, 3, H, W]
+        
         Returns:
-            Total loss
+            Total structured loss
         """
-        # Unary loss
-        loss_unary = self.ce_loss(unary_output, target)
+        # Unary loss (standard cross-entropy)
+        unary_loss = self.ce_loss(unary, target)
         
-        # Pairwise loss (smoothness)
-        loss_pairwise = self._pairwise_loss(crf_output, image, target)
+        # Pairwise smoothness loss
+        pairwise_loss = self._pairwise_loss(crf_output)
         
-        # Combined loss
-        total_loss = (
-            self.unary_weight * loss_unary +
-            self.pairwise_weight * loss_pairwise
-        )
+        # Structured hinge loss
+        structured_loss = self._structured_hinge_loss(unary, crf_output, target)
+        
+        # Combined loss with weights from the paper
+        total_loss = unary_loss + 0.1 * pairwise_loss + 0.5 * structured_loss
         
         return total_loss
     
-    def _pairwise_loss(
-        self,
-        predictions: torch.Tensor,
-        image: torch.Tensor,
+    def _pairwise_loss(self, output: torch.Tensor) -> torch.Tensor:
+        """
+        Encourage spatial smoothness in predictions.
+        Penalizes large gradients in the output.
+        """
+        # Compute horizontal and vertical gradients
+        dx = output[:, :, :, 1:] - output[:, :, :, :-1]
+        dy = output[:, :, 1:, :] - output[:, :, :-1, :]
+        
+        # L1 smoothness loss
+        return (dx.abs().mean() + dy.abs().mean())
+    
+    def _structured_hinge_loss(
+        self, 
+        unary: torch.Tensor, 
+        crf_output: torch.Tensor, 
         target: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute pairwise smoothness loss.
-        Encourages similar predictions for similar pixels.
+        Structured SVM loss (Equation 5 from paper).
+        L(y, ŷ) = max(0, Δ(y, ŷ) + E(x, ŷ) - E(x, y))
         """
-        B, C, H, W = predictions.shape
+        B, C, H, W = unary.shape
         
-        # Get prediction probabilities
-        probs = F.softmax(predictions, dim=1)
+        # Create mask for valid pixels (ignore background)
+        mask = (target != self.ignore_index).float()
+        num_valid = mask.sum() + 1e-6
         
-        # Compute image gradients
-        image_dx = image[:, :, :, 1:] - image[:, :, :, :-1]
-        image_dy = image[:, :, 1:, :] - image[:, :, :-1, :]
+        # Ground truth energy: E(x, y)
+        target_clamped = torch.clamp(target, 0, C - 1)  # Clamp to valid range
+        target_one_hot = F.one_hot(target_clamped, num_classes=C).permute(0, 3, 1, 2).float()
+        E_gt = -(unary * target_one_hot * mask.unsqueeze(1)).sum() / num_valid
         
-        # Compute prediction gradients
-        pred_dx = probs[:, :, :, 1:] - probs[:, :, :, :-1]
-        pred_dy = probs[:, :, 1:, :] - probs[:, :, :-1, :]
+        # Predicted energy: E(x, ŷ)
+        E_pred = -(unary * crf_output * mask.unsqueeze(1)).sum() / num_valid
         
-        # Weight by image similarity (edge-aware)
-        weight_x = torch.exp(-torch.sum(image_dx ** 2, dim=1, keepdim=True))
-        weight_y = torch.exp(-torch.sum(image_dy ** 2, dim=1, keepdim=True))
+        # Hamming distance: Δ(y, ŷ)
+        pred_labels = crf_output.argmax(dim=1)
+        delta = ((pred_labels != target).float() * mask).sum() / num_valid
         
-        # Weighted smoothness loss
-        loss_x = torch.mean(weight_x * torch.sum(pred_dx ** 2, dim=1, keepdim=True))
-        loss_y = torch.mean(weight_y * torch.sum(pred_dy ** 2, dim=1, keepdim=True))
+        # Hinge loss: max(0, margin + delta + E_pred - E_gt)
+        loss = torch.clamp(self.margin + delta + E_pred - E_gt, min=0)
         
-        return loss_x + loss_y
+        return loss
 
 
 class DiceLoss(nn.Module):
