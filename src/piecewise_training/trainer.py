@@ -23,17 +23,44 @@ class PiecewiseTrainer:
         device: torch.device,
         num_classes: int,
         learning_rate: float = 1e-3,
-        weight_decay: float = 5e-4
+        weight_decay: float = 5e-4,
+        patience: int = 5  # ✅ Add early stopping patience
     ):
         self.model = model.to(device)
         self.device = device
         self.num_classes = num_classes
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.patience = patience  # ✅ Store patience
         
         # ✅ Use different losses for different stages
         self.unary_criterion = nn.CrossEntropyLoss(ignore_index=255)  # Stage 1
         self.structured_criterion = StructuredLoss(num_classes=num_classes)  # Stage 2 & 3
+
+    def _early_stopping_check(
+        self,
+        val_miou_history: list,
+        patience: int = 5
+    ) -> bool:
+        """
+        Check if training should stop early.
+        
+        Returns:
+            True if should stop, False otherwise
+        """
+        if len(val_miou_history) < patience + 1:
+            return False
+        
+        # Check if mIoU hasn't improved in last 'patience' epochs
+        recent_miou = val_miou_history[-patience:]
+        best_recent = max(recent_miou)
+        best_overall = max(val_miou_history[:-patience])
+        
+        if best_recent <= best_overall:
+            print(f"\n⚠️ Early stopping: No improvement in {patience} epochs")
+            return True
+        
+        return False
         
     def _get_optimizer(self, parameters, lr: Optional[float] = None):
         """Create optimizer for given parameters."""
@@ -63,11 +90,27 @@ class PiecewiseTrainer:
             for param in self.model.crf.parameters():
                 param.requires_grad = False
         
-        # Optimizer for unary network only
-        optimizer = self._get_optimizer(self.model.unary_net.parameters())
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        # ✅ FIX: Lower learning rate
+        optimizer = self._get_optimizer(
+            self.model.unary_net.parameters(),
+            lr=1e-4  # ✅ Changed from 1e-3 to 1e-4
+        )
         
-        history = {'train_loss': [], 'val_loss': [], 'val_miou': []}
+        # ✅ FIX: Add learning rate warmup
+        def lr_lambda(epoch):
+            if epoch < 5:  # Warmup for first 5 epochs
+                return (epoch + 1) / 5
+            else:
+                return 0.1 ** ((epoch - 5) // 10)  # Decay every 10 epochs
+        
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        
+        history = {
+            'train_loss': [],
+            'val_loss': [],
+            'val_miou': [],
+            'val_acc': []
+        }
         
         for epoch in range(num_epochs):
             # Training
@@ -84,15 +127,27 @@ class PiecewiseTrainer:
                 # Forward pass (unary only)
                 unary_output, _ = self.model(images, apply_crf=False)
                 
-                # ✅ Use unary_criterion (not criterion!)
+                # Compute loss
                 loss = self.unary_criterion(unary_output, labels)
+                
+                # ✅ ADD: Check for NaN loss
+                if torch.isnan(loss):
+                    print(f"\n⚠️ NaN loss detected at batch {batch_idx}! Skipping...")
+                    continue
                 
                 # Backward pass
                 loss.backward()
+                
+                # ✅ ADD: Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
                 train_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
+                pbar.set_postfix({
+                    'loss': loss.item(),
+                    'lr': optimizer.param_groups[0]['lr']  # ✅ Show current LR
+                })
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
@@ -102,9 +157,19 @@ class PiecewiseTrainer:
                 val_metrics = self.validate(val_loader, use_crf=False)
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                history['val_acc'].append(val_metrics['pixel_acc'])
+                
+                print(f"Epoch {epoch+1}: "
+                    f"Train Loss={avg_train_loss:.4f}, "
                     f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val mIoU={val_metrics['miou']:.4f}, "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f}, "
+                    f"LR={optimizer.param_groups[0]['lr']:.6f}")  # ✅ Show LR
+                
+                # Early stopping check
+                if self._early_stopping_check(history['val_miou'], patience=self.patience):
+                    print(f"Stopping at epoch {epoch+1}")
+                    break
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
             
@@ -142,7 +207,12 @@ class PiecewiseTrainer:
             lr=self.learning_rate * 0.1  # Lower learning rate for CRF
         )
         
-        history = {'train_loss': [], 'val_loss': [], 'val_miou': []}
+        history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_miou': [],
+        'val_acc': []  # ✅ Add this
+        }
         
         for epoch in range(num_epochs):
             self.model.train()
@@ -176,9 +246,18 @@ class PiecewiseTrainer:
                 val_metrics = self.validate(val_loader, use_crf=True)
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                history['val_acc'].append(val_metrics['pixel_acc'])  # ✅ Add this
+                
+                print(f"Epoch {epoch+1}: "
+                    f"Train Loss={avg_train_loss:.4f}, "
                     f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val mIoU={val_metrics['miou']:.4f}, "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f}")  # ✅ Add this
+                
+                # ✅ ADD EARLY STOPPING CHECK HERE
+                if self._early_stopping_check(history['val_miou'], patience=self.patience):
+                    print(f"Stopping at epoch {epoch+1}")
+                    break
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
         
@@ -213,7 +292,12 @@ class PiecewiseTrainer:
         # ✅ Gradient accumulation for effective larger batch size
         accumulation_steps = 2  # Effective batch size = 8 × 2 = 16
         
-        history = {'train_loss': [], 'val_loss': [], 'val_miou': []}
+        history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_miou': [],
+        'val_acc': []  # ✅ Add this
+        }
         
         for epoch in range(num_epochs):
             self.model.train()
@@ -265,9 +349,18 @@ class PiecewiseTrainer:
                 val_metrics = self.validate(val_loader, use_crf=True)
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                history['val_acc'].append(val_metrics['pixel_acc'])  # ✅ Add this
+                
+                print(f"Epoch {epoch+1}: "
+                    f"Train Loss={avg_train_loss:.4f}, "
                     f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}")
+                    f"Val mIoU={val_metrics['miou']:.4f}, "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f}")  # ✅ Add this
+                
+                # ✅ ADD EARLY STOPPING CHECK HERE
+                if self._early_stopping_check(history['val_miou'], patience=self.patience):
+                    print(f"Stopping at epoch {epoch+1}")
+                    break
             else:
                 print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
             
@@ -276,15 +369,26 @@ class PiecewiseTrainer:
         return history
     
     
+    
     def validate(
         self,
         val_loader: DataLoader,
         use_crf: bool = True
     ) -> Dict[str, float]:
-        """Validate model."""
+        """
+        Validate the model on validation set.
+        
+        Args:
+            val_loader: Validation data loader
+            use_crf: Whether to use CRF refinement
+        
+        Returns:
+            Dictionary with validation metrics
+        """
         self.model.eval()
+        
         total_loss = 0.0
-        confusion_matrix = np.zeros((self.num_classes, self.num_classes))
+        confusion_matrix = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
         
         with torch.no_grad():
             for images, labels in val_loader:
@@ -293,44 +397,86 @@ class PiecewiseTrainer:
                 
                 # Forward pass
                 unary_output, crf_output = self.model(images, apply_crf=use_crf)
-                output = crf_output if (use_crf and crf_output is not None) else unary_output
                 
-                # ✅ Use unary_criterion for validation
-                loss = self.unary_criterion(output, labels)
+                # Use CRF output if available, otherwise unary
+                if use_crf and crf_output is not None:
+                    output = crf_output
+                else:
+                    output = unary_output
+                
+                # Compute loss
+                loss = self.criterion(output, labels)
                 total_loss += loss.item()
                 
-                # Compute confusion matrix
-                pred = output.argmax(dim=1).cpu().numpy()
-                labels_np = labels.cpu().numpy()
+                # Get predictions
+                predictions = output.argmax(dim=1)  # [B, H, W]
+                
+                # ✅ FIX: Update confusion matrix correctly
+                # Flatten predictions and labels
+                pred_flat = predictions.cpu().numpy().flatten()
+                label_flat = labels.cpu().numpy().flatten()
+                
+                # Remove ignore index (255)
+                valid_mask = label_flat != 255
+                pred_flat = pred_flat[valid_mask]
+                label_flat = label_flat[valid_mask]
                 
                 # Update confusion matrix
-                mask = labels_np != 255  # Ignore index
-                for i in range(self.num_classes):
-                    for j in range(self.num_classes):
-                        confusion_matrix[i, j] += np.sum(
-                            (labels_np[mask] == i) & (pred[mask] == j)
-                        )
+                for true_label in range(self.num_classes):
+                    for pred_label in range(self.num_classes):
+                        mask = (label_flat == true_label) & (pred_flat == pred_label)
+                        confusion_matrix[true_label, pred_label] += mask.sum()
         
         # Compute metrics
         avg_loss = total_loss / len(val_loader)
         miou = self._compute_miou(confusion_matrix)
         
-        return {'loss': avg_loss, 'miou': miou}
-    
+        # ✅ FIX: Compute pixel accuracy
+        pixel_acc = confusion_matrix.diagonal().sum() / confusion_matrix.sum()
+        
+        return {
+            'loss': avg_loss,
+            'miou': miou,
+            'pixel_acc': pixel_acc,
+            'confusion_matrix': confusion_matrix
+        }
+
+
     def _compute_miou(self, confusion_matrix: np.ndarray) -> float:
-        """Compute mean Intersection over Union."""
+        """
+        Compute mean IoU from confusion matrix.
+        
+        Args:
+            confusion_matrix: [num_classes, num_classes]
+        
+        Returns:
+            Mean IoU across all classes
+        """
         iou_per_class = []
+        
         for i in range(self.num_classes):
+            # True positives
             tp = confusion_matrix[i, i]
+            
+            # False positives + False negatives
             fp = confusion_matrix[:, i].sum() - tp
             fn = confusion_matrix[i, :].sum() - tp
             
+            # Compute IoU
             denominator = tp + fp + fn
+            
             if denominator > 0:
                 iou = tp / denominator
                 iou_per_class.append(iou)
+            else:
+                # ✅ FIX: Skip classes with no samples (don't use NaN)
+                continue
         
-        return np.mean(iou_per_class) if iou_per_class else 0.0
+        # ✅ FIX: Return mean of valid IoUs only
+        if len(iou_per_class) > 0:
+            return np.mean(iou_per_class)
+        else:
+            return 0.0
     
     def train_piecewise(
         self,

@@ -64,6 +64,29 @@ class DeepLabV1Backbone(nn.Module):
             nn.Dropout2d(0.5),
             nn.Conv2d(1024, num_classes, 1)
         )
+
+        # ✅ ADD PROPER INITIALIZATION
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """
+        Initialize weights properly to prevent dead neurons.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # Kaiming initialization for ReLU activations
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        
+        # ✅ CRITICAL: Initialize final layer with small weights
+        # This prevents the model from being too confident initially
+        final_conv = self.classifier[-1]
+        nn.init.normal_(final_conv.weight, mean=0, std=0.01)
+        nn.init.constant_(final_conv.bias, 0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
