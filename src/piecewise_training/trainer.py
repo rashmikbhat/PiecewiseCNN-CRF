@@ -24,7 +24,8 @@ class PiecewiseTrainer:
         num_classes: int,
         learning_rate: float = 1e-3,
         weight_decay: float = 5e-4,
-        patience: int = 5  # ✅ Add early stopping patience
+        patience: int = 5,  # ✅ Add early stopping patience
+        class_weights: Optional[torch.Tensor] = None
     ):
         self.model = model.to(device)
         self.device = device
@@ -32,17 +33,26 @@ class PiecewiseTrainer:
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.patience = patience  # ✅ Store patience
+
+        if class_weights is not None:
+            class_weights = class_weights.to(device)
         
         self.unary_loss = UnaryLoss(ignore_index=255)  # Stage 1
         self.piecewise_loss = PiecewiseCRFLoss(  # Stage 2 & 3
             num_classes=num_classes,
             unary_weight=1.0,
             pairwise_weight=0.1,
-            ignore_index=255
+            ignore_index=255,
+            class_weights=class_weights
         )
         
+        # Alias for structured loss (same as piecewise loss)
+        self.structured_criterion = self.piecewise_loss
+        
         # For validation (simple cross-entropy)
-        self.criterion = nn.CrossEntropyLoss(ignore_index=255)
+        self.criterion = nn.CrossEntropyLoss(
+            weight=class_weights,
+            ignore_index=255)
 
     def _early_stopping_check(
         self,
@@ -304,19 +314,14 @@ class PiecewiseTrainer:
                 # Forward pass with CRF
                 unary_output, crf_output = self.model(images, apply_crf=True)
                 
-                # ✅ Use structured loss for joint training
+                # ✅ FIXED: Use piecewise loss (not structured_criterion)
                 if crf_output is not None:
-                    loss = self.structured_criterion(unary_output, crf_output, labels)
+                    loss = self.piecewise_loss(unary_output, crf_output, labels, images)
                 else:
-                    loss = self.unary_criterion(unary_output, labels)
+                    loss = self.unary_loss(unary_output, labels)
                 
-                # ✅ Use PiecewiseCRFLoss for joint training
-                loss = self.piecewise_loss(
-                    unary_output, crf_output, labels, images
-                )
-                
+                # Backward pass
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
                 
                 train_loss += loss.item()

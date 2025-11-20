@@ -1,12 +1,8 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class PiecewiseCRFLoss(nn.Module):
     """
@@ -23,7 +19,8 @@ class PiecewiseCRFLoss(nn.Module):
         num_classes: int,
         unary_weight: float = 1.0,
         pairwise_weight: float = 0.1,
-        ignore_index: int = 255
+        ignore_index: int = 255,
+        class_weights: Optional[torch.Tensor] = None
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -32,7 +29,9 @@ class PiecewiseCRFLoss(nn.Module):
         self.ignore_index = ignore_index
         
         # Standard cross-entropy for unary term
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=class_weights,
+            ignore_index=ignore_index)
     
     def forward(
         self,
