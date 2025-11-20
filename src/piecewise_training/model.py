@@ -6,14 +6,13 @@ from typing import Tuple, Optional, List
 
 class DeepLabV1Backbone(nn.Module):
     """
-    Simplified DeepLab-like backbone for unary potentials.
-    Based on VGG-16 with dilated convolutions.
+    DeepLab-style backbone with dilated convolutions.
+    Based on VGG-16 architecture.
     """
-    def __init__(self, num_classes: int, pretrained: bool = True):
+    def __init__(self, num_classes: int):
         super().__init__()
-        self.num_classes = num_classes
         
-        # VGG-16 inspired feature extractor with dilated convolutions
+        # VGG-16 style encoder with dilated convolutions
         self.features = nn.Sequential(
             # Block 1
             nn.Conv2d(3, 64, 3, padding=1),
@@ -38,27 +37,26 @@ class DeepLabV1Backbone(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
-            # Block 4
-            nn.Conv2d(256, 512, 3, padding=1),
+            # Block 4 (with dilation)
+            nn.Conv2d(256, 512, 3, padding=2, dilation=2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, stride=2),
             
-            # Block 5 - with dilation
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            # Block 5 (with dilation)
+            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
             nn.ReLU(inplace=True),
         )
         
-        # Classifier for unary potentials
+        # Classifier
         self.classifier = nn.Sequential(
-            nn.Conv2d(512, 1024, 3, padding=6, dilation=6),
+            nn.Conv2d(512, 1024, 3, padding=12, dilation=12),
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.5),
             nn.Conv2d(1024, 1024, 1),
@@ -68,22 +66,10 @@ class DeepLabV1Backbone(nn.Module):
         )
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Input image [B, 3, H, W]
-        Returns:
-            Unary potentials [B, num_classes, H/8, W/8]
-        """
-        features = self.features(x)
-        unary = self.classifier(features)
-        return unary
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Optional
 
 
 class DenseCRF(nn.Module):
@@ -105,9 +91,9 @@ class DenseCRF(nn.Module):
     ):
         super().__init__()
         self.num_classes = num_classes
-        self.num_iterations = num_iterations  # Full iterations for inference
+        self.num_iterations = num_iterations
         
-        # ✅ Learnable CRF parameters (as per paper)
+        # ✅ Learnable CRF parameters
         self.pos_xy_std = nn.Parameter(torch.tensor(pos_xy_std))
         self.pos_w = nn.Parameter(torch.tensor(pos_w))
         self.bilateral_xy_std = nn.Parameter(torch.tensor(bilateral_xy_std))
@@ -131,11 +117,11 @@ class DenseCRF(nn.Module):
         """
         B, C, H, W = unary.shape
         
-        # ✅ ADAPTIVE ITERATIONS: Use fewer during training for speed
+        # ✅ ADAPTIVE ITERATIONS: Use fewer during training
         if self.training:
-            iterations = max(3, self.num_iterations // 2)  # Half iterations during training
+            iterations = max(3, self.num_iterations // 2)
         else:
-            iterations = self.num_iterations  # Full iterations during inference
+            iterations = self.num_iterations
         
         # Initialize Q with softmax of unary potentials
         Q = F.softmax(unary, dim=1)
@@ -151,7 +137,6 @@ class DenseCRF(nn.Module):
         
         # Mean-field iterations
         for _ in range(iterations):
-            # Message passing
             Q = self._message_passing_step(Q, image, unary)
         
         return Q
@@ -162,23 +147,17 @@ class DenseCRF(nn.Module):
         image: torch.Tensor,
         unary: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Single mean-field iteration.
-        
-        ✅ OPTIMIZED: Simplified bilateral filtering
-        """
-        B, C, H, W = Q.shape
-        
-        # Spatial smoothness (appearance-independent)
+        """Single mean-field iteration."""
+        # Spatial smoothness
         spatial_out = self._spatial_filter(Q)
         
-        # Bilateral smoothness (appearance-dependent)
+        # Bilateral smoothness
         bilateral_out = self._bilateral_filter(Q, image)
         
         # Combine messages
         messages = self.pos_w * spatial_out + self.bilateral_w * bilateral_out
         
-        # Compatibility transform (simple subtraction)
+        # Compatibility transform
         messages = -messages
         
         # Add unary potentials
@@ -191,13 +170,11 @@ class DenseCRF(nn.Module):
     
     def _spatial_filter(self, Q: torch.Tensor) -> torch.Tensor:
         """
-        Spatial Gaussian filter.
-        
-        ✅ OPTIMIZED: Use average pooling for speed
+        Spatial Gaussian filter using average pooling.
         """
-        # Simple spatial smoothing using average pooling
         kernel_size = int(self.pos_xy_std.item() * 2) + 1
         kernel_size = max(3, min(kernel_size, 7))  # Clamp to [3, 7]
+        kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1  # Ensure odd
         
         padding = kernel_size // 2
         
@@ -214,32 +191,54 @@ class DenseCRF(nn.Module):
         """
         Bilateral filter (appearance-dependent smoothing).
         
-        ✅ OPTIMIZED: Simplified implementation for speed
+        ✅ FIXED: Proper dimension handling
         """
         B, C, H, W = Q.shape
         
-        # Compute image gradients for edge detection
-        image_dx = torch.abs(image[:, :, :, 1:] - image[:, :, :, :-1])
-        image_dy = torch.abs(image[:, :, 1:, :] - image[:, :, :-1, :])
+        # ✅ Simple edge-aware smoothing using convolution
+        # Compute image gradients
+        kernel_x = torch.tensor([[-1, 0, 1]], dtype=image.dtype, device=image.device).view(1, 1, 1, 3)
+        kernel_y = torch.tensor([[-1], [0], [1]], dtype=image.dtype, device=image.device).view(1, 1, 3, 1)
         
-        # Edge weights (high at edges, low in smooth regions)
-        edge_weight_x = torch.exp(-image_dx.sum(dim=1, keepdim=True) / self.bilateral_rgb_std)
-        edge_weight_y = torch.exp(-image_dy.sum(dim=1, keepdim=True) / self.bilateral_rgb_std)
+        # Compute gradients for each channel
+        grad_x = F.conv2d(image, kernel_x.repeat(3, 1, 1, 1), padding=(0, 1), groups=3)
+        grad_y = F.conv2d(image, kernel_y.repeat(3, 1, 1, 1), padding=(1, 0), groups=3)
         
-        # Pad to match original size
-        edge_weight_x = F.pad(edge_weight_x, (0, 1, 0, 0), value=1.0)
-        edge_weight_y = F.pad(edge_weight_y, (0, 0, 0, 1), value=1.0)
+        # Edge magnitude
+        edge_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-8).sum(dim=1, keepdim=True)
         
-        # Apply edge-aware smoothing
-        Q_x = Q[:, :, :, 1:] * edge_weight_x + Q[:, :, :, :-1] * (1 - edge_weight_x)
-        Q_y = Q[:, :, 1:, :] * edge_weight_y + Q[:, :, :-1, :] * (1 - edge_weight_y)
+        # Edge weight (high at edges = less smoothing)
+        edge_weight = torch.exp(-edge_mag / self.bilateral_rgb_std)
         
-        # Pad back
-        Q_x = F.pad(Q_x, (1, 0, 0, 0), value=0)
-        Q_y = F.pad(Q_y, (0, 0, 1, 0), value=0)
+        # ✅ Apply Gaussian smoothing weighted by edge information
+        # Use depthwise convolution for efficiency
+        kernel_size = 5
+        padding = kernel_size // 2
         
-        # Combine
-        filtered = (Q_x + Q_y) / 2.0
+        # Create Gaussian kernel
+        sigma = self.bilateral_xy_std
+        x = torch.arange(kernel_size, dtype=Q.dtype, device=Q.device) - kernel_size // 2
+        gauss_1d = torch.exp(-x ** 2 / (2 * sigma ** 2))
+        gauss_1d = gauss_1d / gauss_1d.sum()
+        
+        # 2D Gaussian kernel
+        gauss_2d = gauss_1d.view(-1, 1) * gauss_1d.view(1, -1)
+        gauss_2d = gauss_2d.view(1, 1, kernel_size, kernel_size)
+        
+        # Apply depthwise convolution to each class
+        smoothed = F.conv2d(
+            Q, 
+            gauss_2d.repeat(C, 1, 1, 1), 
+            padding=padding, 
+            groups=C
+        )
+        
+        # ✅ Blend based on edge weights (preserve edges)
+        # Expand edge_weight to match Q dimensions
+        edge_weight_expanded = edge_weight.expand_as(Q)
+        
+        # Mix original and smoothed based on edge strength
+        filtered = Q * (1 - edge_weight_expanded) + smoothed * edge_weight_expanded
         
         return filtered
 
@@ -258,10 +257,10 @@ class PiecewiseTrainedModel(nn.Module):
         self.num_classes = num_classes
         self.use_crf = use_crf
         
-        # Unary potential network
+        # Unary network (CNN)
         self.unary_net = DeepLabV1Backbone(num_classes)
         
-        # CRF for pairwise potentials
+        # CRF layer
         if use_crf:
             self.crf = DenseCRF(num_classes, num_iterations=crf_iterations)
         
@@ -276,6 +275,7 @@ class PiecewiseTrainedModel(nn.Module):
         Args:
             image: Input image [B, 3, H, W]
             apply_crf: Whether to apply CRF refinement
+        
         Returns:
             Tuple of (unary_output, crf_output)
         """
