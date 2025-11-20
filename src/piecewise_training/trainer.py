@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from typing import Dict, Optional, Callable
 import numpy as np
 from tqdm import tqdm
-from src.piecewise_training.losses import StructuredLoss
+from src.piecewise_training.losses import PiecewiseCRFLoss, UnaryLoss
 
 
 class PiecewiseTrainer:
@@ -33,9 +33,16 @@ class PiecewiseTrainer:
         self.weight_decay = weight_decay
         self.patience = patience  # ✅ Store patience
         
-        # ✅ Use different losses for different stages
-        self.unary_criterion = nn.CrossEntropyLoss(ignore_index=255)  # Stage 1
-        self.structured_criterion = StructuredLoss(num_classes=num_classes)  # Stage 2 & 3
+        self.unary_loss = UnaryLoss(ignore_index=255)  # Stage 1
+        self.piecewise_loss = PiecewiseCRFLoss(  # Stage 2 & 3
+            num_classes=num_classes,
+            unary_weight=1.0,
+            pairwise_weight=0.1,
+            ignore_index=255
+        )
+        
+        # For validation (simple cross-entropy)
+        self.criterion = nn.CrossEntropyLoss(ignore_index=255)
 
     def _early_stopping_check(
         self,
@@ -80,20 +87,16 @@ class PiecewiseTrainer:
         num_epochs: int,
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
-        """
-        Stage 1: Train only the unary network (CNN).
-        """
+        """Stage 1: Train unary network with UnaryLoss (Cross-Entropy)."""
         print("Stage 1: Training Unary Network")
         
-        # Freeze CRF parameters if they exist
         if hasattr(self.model, 'crf'):
             for param in self.model.crf.parameters():
                 param.requires_grad = False
         
-        # ✅ FIX: Lower learning rate
         optimizer = self._get_optimizer(
             self.model.unary_net.parameters(),
-            lr=1e-4  # ✅ Changed from 1e-3 to 1e-4
+            lr=1e-4
         )
         
         # ✅ FIX: Add learning rate warmup
@@ -128,26 +131,15 @@ class PiecewiseTrainer:
                 unary_output, _ = self.model(images, apply_crf=False)
                 
                 # Compute loss
-                loss = self.unary_criterion(unary_output, labels)
-                
-                # ✅ ADD: Check for NaN loss
-                if torch.isnan(loss):
-                    print(f"\n⚠️ NaN loss detected at batch {batch_idx}! Skipping...")
-                    continue
-                
-                # Backward pass
+                loss = self.unary_loss(unary_output, labels)
                 loss.backward()
-                
-                # ✅ ADD: Gradient clipping
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
                 optimizer.step()
                 
                 train_loss += loss.item()
-                pbar.set_postfix({
-                    'loss': loss.item(),
-                    'lr': optimizer.param_groups[0]['lr']  # ✅ Show current LR
-                })
+                pbar.set_postfix({'loss': loss.item()})
+                
+                
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
@@ -204,7 +196,7 @@ class PiecewiseTrainer:
         # Optimizer for CRF only
         optimizer = self._get_optimizer(
             self.model.crf.parameters(),
-            lr=self.learning_rate * 0.1  # Lower learning rate for CRF
+            lr=1e-3
         )
         
         history = {
@@ -228,15 +220,19 @@ class PiecewiseTrainer:
                 # Forward pass with CRF
                 unary_output, crf_output = self.model(images, apply_crf=True)
                 
-                # ✅ Use structured loss (not CrossEntropy!)
-                loss = self.structured_criterion(unary_output, crf_output, labels)
+                # ✅ Use PiecewiseCRFLoss (unary + pairwise terms)
+                loss = self.piecewise_loss(
+                    unary_output, crf_output, labels, images
+                )
                 
-                # Backward pass
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.crf.parameters(), max_norm=1.0)
                 optimizer.step()
                 
                 train_loss += loss.item()
                 pbar.set_postfix({'loss': loss.item()})
+                
+                
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
@@ -271,12 +267,8 @@ class PiecewiseTrainer:
         num_epochs: int,
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
-        """
-        Stage 3: Fine-tune entire model end-to-end with structured loss.
-        
-        ✅ OPTIMIZED: Uses gradient accumulation for memory efficiency
-        """
-        print("\nStage 3: Joint Fine-tuning with Structured Loss")
+        """Stage 3: Joint fine-tuning with PiecewiseCRFLoss."""
+        print("\nStage 3: Joint Fine-tuning with Piecewise Loss")
         
         # Unfreeze all parameters
         for param in self.model.parameters():
@@ -318,23 +310,17 @@ class PiecewiseTrainer:
                 else:
                     loss = self.unary_criterion(unary_output, labels)
                 
-                # ✅ Scale loss for gradient accumulation
-                loss = loss / accumulation_steps
+                # ✅ Use PiecewiseCRFLoss for joint training
+                loss = self.piecewise_loss(
+                    unary_output, crf_output, labels, images
+                )
                 
-                # Backward pass
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                optimizer.step()
                 
-                # ✅ Update weights every N steps
-                if (batch_idx + 1) % accumulation_steps == 0:
-                    # Optional: Gradient clipping for stability
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    
-                    optimizer.step()
-                    optimizer.zero_grad()
-                
-                # Track loss (unscaled for logging)
-                train_loss += loss.item() * accumulation_steps
-                pbar.set_postfix({'loss': loss.item() * accumulation_steps})
+                train_loss += loss.item()
+                pbar.set_postfix({'loss': loss.item()})
             
             # ✅ Handle remaining gradients if batch count not divisible by accumulation_steps
             if len(train_loader) % accumulation_steps != 0:
