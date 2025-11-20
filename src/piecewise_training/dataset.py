@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
-from typing import Tuple, Optional, Callable
+from typing import List, Tuple, Optional, Callable
 import os
 
 
@@ -15,18 +15,43 @@ class SegmentationDataset(Dataset):
         image_dir: str,
         label_dir: str,
         transform: Optional[Callable] = None,
-        image_size: Tuple[int, int] = (512, 512)
+        image_size: Tuple[int, int] = (512, 512),
+        image_list: Optional[List[str]] = None
     ):
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.transform = transform
         self.image_size = image_size
         
-        # Get list of images
-        self.images = sorted([
-            f for f in os.listdir(image_dir)
-            if f.endswith(('.jpg', '.png', '.jpeg'))
-        ])
+        if image_list is not None:
+            # Use provided list (from train.txt/val.txt)
+            self.images = []
+            for img_id in image_list:
+                # Check if both image and label exist
+                img_path = os.path.join(image_dir, f"{img_id}.jpg")
+                label_path = os.path.join(label_dir, f"{img_id}.png")
+                
+                if os.path.exists(img_path) and os.path.exists(label_path):
+                    self.images.append(f"{img_id}.jpg")
+                else:
+                    print(f"⚠️ Skipping {img_id}: missing image or label")
+        else:
+            # Get images that have corresponding labels
+            label_files = set([
+                f.replace('.png', '.jpg') 
+                for f in os.listdir(label_dir) 
+                if f.endswith('.png')
+            ])
+            
+            image_files = set([
+                f for f in os.listdir(image_dir) 
+                if f.endswith(('.jpg', '.png', '.jpeg'))
+            ])
+            
+            # Only keep images that have labels
+            self.images = sorted(list(label_files & image_files))
+        
+        print(f"Loaded {len(self.images)} images with segmentation labels")
     
     def __len__(self) -> int:
         return len(self.images)
@@ -63,17 +88,17 @@ class SegmentationDataset(Dataset):
 
 
 class RandomHorizontalFlip:
-    """Random horizontal flip augmentation."""
+    """Random horizontal flip for both image and label."""
     def __init__(self, p: float = 0.5):
         self.p = p
     
     def __call__(
-        self,
-        image: torch.Tensor,
+        self, 
+        image: torch.Tensor, 
         label: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if torch.rand(1).item() < self.p:
-            image = torch.flip(image, dims=[2])
+            image = torch.flip(image, dims=[2])  # Flip width dimension
             label = torch.flip(label, dims=[1])
         return image, label
 
