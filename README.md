@@ -12,8 +12,8 @@ This repository contains a **from-scratch implementation** of the CVPR 2016 pape
 
 - [Overview](#overview)
 - [Key Features](#key-features)
-- [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Installation](#installation)
 - [Training](#training)
 - [Inference](#inference)
 - [Architecture](#architecture)
@@ -21,10 +21,13 @@ This repository contains a **from-scratch implementation** of the CVPR 2016 pape
 - [Project Structure](#project-structure)
 - [Citation](#citation)
 - [License](#license)
+- [Acknowledgments](#acknowledgments)
+- [Contact](#contact)
+- [How Users Can Adapt This](#otherusers)
 
 ---
 
-## 🎯 Overview
+# 🎯 Overview
 
 The paper introduces a **novel piecewise training approach** for combining Convolutional Neural Networks (CNNs) with Conditional Random Fields (CRFs) for semantic segmentation. Unlike traditional joint training, this method trains the model in **three distinct stages**:
 
@@ -62,7 +65,7 @@ The paper introduces a **novel piecewise training approach** for combining Convo
 
 ---
 
-## ✨ Key Features
+# ✨ Key Features
 
 ### Model Architecture
 - ✅ **DeepLab-style backbone** with dilated convolutions for dense prediction
@@ -98,7 +101,7 @@ The paper introduces a **novel piecewise training approach** for combining Convo
 
 ---
 
-## 🚀 Quick Start (Recommended)
+# 🚀 Quick Start (Recommended)
 
 ### **Option 1: Run the Complete Jupyter Notebook** ⭐ **EASIEST**
 
@@ -154,7 +157,7 @@ path = kagglehub.dataset_download('huanghanchina/pascal-voc-2012')
 wget http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar
 tar -xvf VOCtrainval_11-May-2012.tar
 ```
-# Expected structure:
+## Expected structure:
 VOCdevkit/VOC2012/
 ├── JPEGImages/          # RGB images (17,125 images)
 ├── SegmentationClass/   # Segmentation masks (2,913 images)
@@ -164,7 +167,7 @@ VOCdevkit/VOC2012/
         └── val.txt      # Validation image IDs (1,449 images)
 
 
-# Using the Jupyter Notebook
+## Using the Jupyter Notebook
 What the Notebook Does
 The piecewise_training_pipeline.ipynb notebook provides a complete end-to-end pipeline:
 | Section | What It Does | Time |
@@ -177,7 +180,7 @@ The piecewise_training_pipeline.ipynb notebook provides a complete end-to-end pi
 | **6. Evaluate** | Generate metrics and visualizations | 10 min |
 | **7. Inference** | Test on new images | 2 min |
 
-# Running the Notebook
+## Running the Notebook
 ```bash
 # Start Jupyter
 jupyter notebook piecewise_training_pipeline.ipynb
@@ -185,11 +188,11 @@ jupyter notebook piecewise_training_pipeline.ipynb
 jupyter lab piecewise_training_pipeline.ipynb
 ```
 Then:
-1.Click "Run All" in the menu (Cell → Run All)
-2.Wait for training to complete (~5 hours)
-3.Check the training_results/ folder for outputs
+1. Click "Run All" in the menu (Cell → Run All)
+2. Wait for training to complete (~5 hours)
+3. Check the training_results/ folder for outputs
 
-# Notebook Outputs
+## Notebook Outputs
 After running, you'll get:
 training_results/
 ├── piecewise_model_final.pth       # Trained model weights
@@ -202,7 +205,7 @@ training_results/
 ├── metrics_summary.csv             # CSV with all metrics
 └── per_class_performance.csv       # Detailed per-class stats
 
-# Custom Datasets and Models
+## Custom Datasets and Models
 Using Your Own Dataset
 The notebook structure is modular and reusable. To adapt it for your dataset:
 Step 1: Prepare Your Dataset
@@ -218,12 +221,12 @@ your_dataset/
     └── ...
 Step 2: Modify the Notebook
 In the notebook, change these cells:
-# Cell: Configure Dataset Paths
+### Cell: Configure Dataset Paths
 image_dir = 'path/to/your_dataset/images'
 label_dir = 'path/to/your_dataset/labels'
 num_classes = 10  # Change to your number of classes
 
-# Cell: Class Names (optional)
+### Cell: Class Names (optional)
 CLASS_NAMES = ['background', 'class1', 'class2', ...]  # Your class names
 Step 3: Run the Notebook
 Everything else remains the same! The notebook will:
@@ -232,11 +235,13 @@ Everything else remains the same! The notebook will:
 ✅ Generate evaluation reports
 ✅ Run inference
 
-Using Different Backbone Models
+## Using Different Backbone Models
 
 To use a different backbone (e.g., ResNet, EfficientNet):
-1.Modify `src/piecewise_training/model.py`:
+1. Modify `src/piecewise_training/model.py`:
+
 model.py
+
 Apply
 
 class CustomBackbone(nn.Module):
@@ -251,15 +256,15 @@ class CustomBackbone(nn.Module):
         # Your forward pass
         return features
 
-# Then use it in PiecewiseTrainedModel
+### Then use it in PiecewiseTrainedModel
 class PiecewiseTrainedModel(nn.Module):
     def __init__(self, num_classes, ...):
         super().__init__()
         self.unary_net = CustomBackbone(num_classes)  # Use your backbone
         self.crf = DenseCRF(num_classes, ...)
 
-2.Update the notebook:
-# Cell: Create Model
+2. Update the notebook:
+### Cell: Create Model
 model = PiecewiseTrainedModel(
     num_classes=num_classes,
     crf_iterations=10,
@@ -267,9 +272,9 @@ model = PiecewiseTrainedModel(
     # Add any custom parameters here
 )
 
-3.Run the notebook - everything else stays the same!
+3. Run the notebook - everything else stays the same!
 Example: Cityscapes Dataset
-# In the notebook, change:
+## In the notebook, change:
 image_dir = 'path/to/cityscapes/leftImg8bit/train'
 label_dir = 'path/to/cityscapes/gtFine/train'
 num_classes = 19  # Cityscapes has 19 classes
@@ -281,9 +286,10 @@ CLASS_NAMES = [
     'bus', 'train', 'motorcycle', 'bicycle'
 ]
 
-# Everything else works automatically!
+Everything else works automatically!
+
 Attribution (100)
-🎓 Training
+# 🎓 Training
 Recommended Configuration
 | Configuration | Stage 1 | Stage 2 | Stage 3 | Total Time | Expected mIoU |
 |--------------|---------|---------|---------|------------|---------------|
@@ -298,19 +304,19 @@ from src.piecewise_training.trainer import PiecewiseTrainer
 from src.piecewise_training.dataset import SegmentationDataset
 from torch.utils.data import DataLoader
 
-# Configuration
+## Configuration
 num_classes = 21
 batch_size = 8
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Create model
+## Create model
 model = PiecewiseTrainedModel(
     num_classes=num_classes,
     crf_iterations=10,
     use_crf=True
 )
 
-# Create datasets
+## Create datasets
 train_dataset = SegmentationDataset(
     image_dir='path/to/JPEGImages',
     label_dir='path/to/SegmentationClass',
@@ -324,7 +330,7 @@ train_loader = DataLoader(
     num_workers=4
 )
 
-# Create trainer
+## Create trainer
 trainer = PiecewiseTrainer(
     model=model,
     device=device,
@@ -333,7 +339,7 @@ trainer = PiecewiseTrainer(
     weight_decay=5e-4
 )
 
-# Run piecewise training
+## Run piecewise training
 history = trainer.train_piecewise(
     train_loader=train_loader,
     stage1_epochs=20,
@@ -342,7 +348,7 @@ history = trainer.train_piecewise(
     val_loader=val_loader
 )
 
-# Save model
+## Save model
 torch.save(model.state_dict(), 'piecewise_model_final.pth')
 Training Tips
 1.Monitor Validation Loss: Stop if validation loss plateaus
@@ -358,12 +364,12 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-# Load model
+## Load model
 model = PiecewiseTrainedModel(num_classes=21, crf_iterations=10)
 model.load_state_dict(torch.load('piecewise_model_final.pth'))
 model.eval()
 
-# Load and preprocess image
+## Load and preprocess image
 image = Image.open('test_image.jpg').convert('RGB')
 transform = transforms.Compose([
     transforms.Resize((512, 512)),
@@ -372,19 +378,19 @@ transform = transforms.Compose([
 ])
 image_tensor = transform(image).unsqueeze(0)
 
-# Run inference
+## Run inference
 with torch.no_grad():
     unary_output, crf_output = model(image_tensor, apply_crf=True)
     prediction = crf_output.argmax(dim=1).squeeze(0)
 
-# Visualize
+## Visualize
 import matplotlib.pyplot as plt
 plt.imshow(prediction.cpu(), cmap='tab20')
 plt.show()
 
 Batch Inference
 The notebook includes a batch inference function that processes multiple images efficiently.
-🏗️ Architecture
+# 🏗️ Architecture
 Unary Network (DeepLab-style)
 Input Image [B, 3, 512, 512]
     ↓
@@ -420,7 +426,7 @@ bilateral_xy_std: Bilateral spatial bandwidth (default: 80.0)
 bilateral_rgb_std: Bilateral color bandwidth (default: 13.0)
 bilateral_w: Bilateral kernel weight (default: 10.0)
 
-## **📊 Performance**
+# **📊 Performance**
 Pascal VOC 2012 Results
 | Method | Backbone | mIoU (val) | Training Time |
 |--------|----------|------------|---------------|
@@ -436,7 +442,7 @@ Per-Class IoU (Example)
 | car | 82.1% | 0.86 | 0.88 | 0.87 |
 | dog | 65.4% | 0.71 | 0.73 | 0.72 |
 
-## **📁 Project Structure**
+# **📁 Project Structure**
 PiecewiseCNN-CRF/
 ├── src/
 │   └── piecewise_training/
@@ -458,7 +464,7 @@ PiecewiseCNN-CRF/
 ├── requirements.txt              # Python dependencies
 └── LICENSE                       # MIT License
 
-## **📚 Citation**
+# **📚 Citation**
 If you use this implementation in your research, please cite the original paper:
 
 @inproceedings{lin2016efficient,
@@ -469,7 +475,7 @@ If you use this implementation in your research, please cite the original paper:
   year={2016}
 }
 
-## **📄 License**
+# **📄 License**
 This project is licensed under the MIT License - see the LICENSE file for details.
 ## **🤝 Contributing**
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -479,13 +485,13 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (git push origin feature/AmazingFeature)
 5. Open a Pull Request
 
-## **🙏 Acknowledgments**
+# **🙏 Acknowledgments**
 Original paper authors: Lin et al. (CVPR 2016)
 DeepLab architecture: Chen et al.
 Dense CRF: Krähenbühl and Koltun
 Pascal VOC dataset: Everingham et al.
 
-## **📧 Contact**
+# **📧 Contact**
 
 For questions or issues, please open an issue on GitHub.
 🔗 Useful Links
@@ -501,9 +507,7 @@ Dense CRF Paper-https://arxiv.org/abs/1210.5644
 Made with ❤️ for Deep Learning Research
 Last updated: November 2025
 
----
-
-## **How Users Can Adapt This** 
+# **How Users Can Adapt This** 
 
 ### **For Different Datasets:**
 1. Clone the repo
