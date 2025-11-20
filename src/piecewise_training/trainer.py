@@ -185,6 +185,7 @@ class PiecewiseTrainer:
         return history
     
     
+    
     def train_stage3_joint(
         self,
         train_loader: DataLoader,
@@ -193,6 +194,8 @@ class PiecewiseTrainer:
     ) -> Dict[str, list]:
         """
         Stage 3: Fine-tune entire model end-to-end with structured loss.
+        
+        ✅ OPTIMIZED: Uses gradient accumulation for memory efficiency
         """
         print("\nStage 3: Joint Fine-tuning with Structured Loss")
         
@@ -207,18 +210,20 @@ class PiecewiseTrainer:
         )
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
         
+        # ✅ Gradient accumulation for effective larger batch size
+        accumulation_steps = 2  # Effective batch size = 8 × 2 = 16
+        
         history = {'train_loss': [], 'val_loss': [], 'val_miou': []}
         
         for epoch in range(num_epochs):
             self.model.train()
             train_loss = 0.0
+            optimizer.zero_grad()  # ✅ Initialize gradients once per epoch
             
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
             for batch_idx, (images, labels) in enumerate(pbar):
                 images = images.to(self.device)
                 labels = labels.to(self.device)
-                
-                optimizer.zero_grad()
                 
                 # Forward pass with CRF
                 unary_output, crf_output = self.model(images, apply_crf=True)
@@ -229,12 +234,28 @@ class PiecewiseTrainer:
                 else:
                     loss = self.unary_criterion(unary_output, labels)
                 
+                # ✅ Scale loss for gradient accumulation
+                loss = loss / accumulation_steps
+                
                 # Backward pass
                 loss.backward()
-                optimizer.step()
                 
-                train_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
+                # ✅ Update weights every N steps
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    # Optional: Gradient clipping for stability
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    optimizer.step()
+                    optimizer.zero_grad()
+                
+                # Track loss (unscaled for logging)
+                train_loss += loss.item() * accumulation_steps
+                pbar.set_postfix({'loss': loss.item() * accumulation_steps})
+            
+            # ✅ Handle remaining gradients if batch count not divisible by accumulation_steps
+            if len(train_loader) % accumulation_steps != 0:
+                optimizer.step()
+                optimizer.zero_grad()
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)

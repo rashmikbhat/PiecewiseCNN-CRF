@@ -79,139 +79,169 @@ class DeepLabV1Backbone(nn.Module):
         return unary
 
 
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Tuple, Optional
+
+
 class DenseCRF(nn.Module):
     """
-    Dense CRF layer with learnable parameters.
-    Implements mean-field approximation for inference.
-    """
+    Differentiable Dense CRF layer for pairwise potentials.
+    Implements mean-field inference as described in the paper.
     
-    def __init__(self, num_classes: int, num_iterations: int = 10):
+    ✅ OPTIMIZED: Adaptive iterations for faster training
+    """
+    def __init__(
+        self,
+        num_classes: int,
+        num_iterations: int = 10,
+        pos_xy_std: float = 3.0,
+        pos_w: float = 3.0,
+        bilateral_xy_std: float = 80.0,
+        bilateral_rgb_std: float = 13.0,
+        bilateral_w: float = 10.0
+    ):
         super().__init__()
         self.num_classes = num_classes
-        self.num_iterations = num_iterations
+        self.num_iterations = num_iterations  # Full iterations for inference
         
-        # Learnable compatibility transform (Potts model initialization)
-        self.compatibility = nn.Parameter(torch.eye(num_classes))
+        # ✅ Learnable CRF parameters (as per paper)
+        self.pos_xy_std = nn.Parameter(torch.tensor(pos_xy_std))
+        self.pos_w = nn.Parameter(torch.tensor(pos_w))
+        self.bilateral_xy_std = nn.Parameter(torch.tensor(bilateral_xy_std))
+        self.bilateral_rgb_std = nn.Parameter(torch.tensor(bilateral_rgb_std))
+        self.bilateral_w = nn.Parameter(torch.tensor(bilateral_w))
         
-        # Learnable kernel weights
-        self.spatial_weight = nn.Parameter(torch.tensor(3.0))
-        self.bilateral_weight = nn.Parameter(torch.tensor(5.0))
-        
-    def forward(self, unary: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        unary: torch.Tensor,
+        image: torch.Tensor
+    ) -> torch.Tensor:
         """
-        Perform mean-field inference.
+        Apply Dense CRF refinement.
         
         Args:
             unary: Unary potentials [B, C, H, W]
-            image: Input image [B, 3, H, W] (for bilateral filtering)
-            
+            image: Input image [B, 3, H, W]
+        
         Returns:
             Refined predictions [B, C, H, W]
         """
         B, C, H, W = unary.shape
-        assert C == self.num_classes, f"Expected {self.num_classes} classes, got {C}"
+        
+        # ✅ ADAPTIVE ITERATIONS: Use fewer during training for speed
+        if self.training:
+            iterations = max(3, self.num_iterations // 2)  # Half iterations during training
+        else:
+            iterations = self.num_iterations  # Full iterations during inference
         
         # Initialize Q with softmax of unary potentials
-        Q = F.softmax(unary, dim=1)  # [B, C, H, W]
+        Q = F.softmax(unary, dim=1)
+        
+        # Upsample image to match unary resolution
+        if image.shape[2:] != unary.shape[2:]:
+            image = F.interpolate(
+                image, 
+                size=(H, W), 
+                mode='bilinear', 
+                align_corners=False
+            )
         
         # Mean-field iterations
-        for iteration in range(self.num_iterations):
-            # 1. Message passing
-            Q_spatial = self._spatial_message_passing(Q)
-            Q_bilateral = self._bilateral_message_passing(Q, image)
-            
-            # 2. Combine messages with learnable weights
-            messages = (
-                torch.clamp(self.spatial_weight, min=0) * Q_spatial +
-                torch.clamp(self.bilateral_weight, min=0) * Q_bilateral
-            )
-            
-            # 3. Apply compatibility transform
-            # Reshape for batch matrix multiplication
-            messages_flat = messages.reshape(B, C, H * W)  # [B, C, H*W]
-            
-            # Apply compatibility: [C, C] x [B, C, H*W] -> [B, C, H*W]
-            # Use bmm with broadcasting
-            compat_transform = torch.bmm(
-                self.compatibility.unsqueeze(0).expand(B, -1, -1),  # [B, C, C]
-                messages_flat                                        # [B, C, H*W]
-            )
-            
-            # Reshape back
-            compat_transform = compat_transform.reshape(B, C, H, W)
-            
-            # 4. Update Q with compatibility-transformed messages
-            Q = F.softmax(unary - compat_transform, dim=1)
+        for _ in range(iterations):
+            # Message passing
+            Q = self._message_passing_step(Q, image, unary)
         
         return Q
     
-    def _spatial_message_passing(self, Q: torch.Tensor) -> torch.Tensor:
+    def _message_passing_step(
+        self,
+        Q: torch.Tensor,
+        image: torch.Tensor,
+        unary: torch.Tensor
+    ) -> torch.Tensor:
         """
-        Spatial Gaussian kernel message passing.
-        Approximated with average pooling.
+        Single mean-field iteration.
+        
+        ✅ OPTIMIZED: Simplified bilateral filtering
         """
-        kernel_size = 5
+        B, C, H, W = Q.shape
+        
+        # Spatial smoothness (appearance-independent)
+        spatial_out = self._spatial_filter(Q)
+        
+        # Bilateral smoothness (appearance-dependent)
+        bilateral_out = self._bilateral_filter(Q, image)
+        
+        # Combine messages
+        messages = self.pos_w * spatial_out + self.bilateral_w * bilateral_out
+        
+        # Compatibility transform (simple subtraction)
+        messages = -messages
+        
+        # Add unary potentials
+        Q_new = unary + messages
+        
+        # Normalize
+        Q_new = F.softmax(Q_new, dim=1)
+        
+        return Q_new
+    
+    def _spatial_filter(self, Q: torch.Tensor) -> torch.Tensor:
+        """
+        Spatial Gaussian filter.
+        
+        ✅ OPTIMIZED: Use average pooling for speed
+        """
+        # Simple spatial smoothing using average pooling
+        kernel_size = int(self.pos_xy_std.item() * 2) + 1
+        kernel_size = max(3, min(kernel_size, 7))  # Clamp to [3, 7]
+        
         padding = kernel_size // 2
         
-        # Per-channel average pooling (approximates Gaussian convolution)
-        Q_smooth = F.avg_pool2d(
+        smoothed = F.avg_pool2d(
             Q, 
             kernel_size=kernel_size, 
             stride=1, 
             padding=padding
         )
         
-        return Q_smooth
+        return smoothed
     
-    def _bilateral_message_passing(
-        self, 
-        Q: torch.Tensor, 
-        image: torch.Tensor
-    ) -> torch.Tensor:
+    def _bilateral_filter(self, Q: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
         """
-        Bilateral filtering (edge-aware smoothing).
-        Uses image gradients to preserve edges.
+        Bilateral filter (appearance-dependent smoothing).
+        
+        ✅ OPTIMIZED: Simplified implementation for speed
         """
         B, C, H, W = Q.shape
         
-        # Convert to grayscale for edge detection
-        gray = (
-            0.299 * image[:, 0:1] + 
-            0.587 * image[:, 1:2] + 
-            0.114 * image[:, 2:3]
-        )
+        # Compute image gradients for edge detection
+        image_dx = torch.abs(image[:, :, :, 1:] - image[:, :, :, :-1])
+        image_dy = torch.abs(image[:, :, 1:, :] - image[:, :, :-1, :])
         
-        # Compute edge weights using Sobel filters
-        sobel_x = torch.tensor(
-            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
-            dtype=image.dtype, 
-            device=image.device
-        ).view(1, 1, 3, 3)
+        # Edge weights (high at edges, low in smooth regions)
+        edge_weight_x = torch.exp(-image_dx.sum(dim=1, keepdim=True) / self.bilateral_rgb_std)
+        edge_weight_y = torch.exp(-image_dy.sum(dim=1, keepdim=True) / self.bilateral_rgb_std)
         
-        sobel_y = torch.tensor(
-            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
-            dtype=image.dtype, 
-            device=image.device
-        ).view(1, 1, 3, 3)
-        
-        grad_x = F.conv2d(gray, sobel_x, padding=1)
-        grad_y = F.conv2d(gray, sobel_y, padding=1)
-        
-        # Edge magnitude
-        edge_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
-        
-        # Edge-preserving weight (higher at edges)
-        edge_weight = torch.exp(-edge_magnitude)
+        # Pad to match original size
+        edge_weight_x = F.pad(edge_weight_x, (0, 1, 0, 0), value=1.0)
+        edge_weight_y = F.pad(edge_weight_y, (0, 0, 0, 1), value=1.0)
         
         # Apply edge-aware smoothing
-        Q_weighted = Q * edge_weight
-        Q_bilateral = F.avg_pool2d(Q_weighted, kernel_size=3, stride=1, padding=1)
+        Q_x = Q[:, :, :, 1:] * edge_weight_x + Q[:, :, :, :-1] * (1 - edge_weight_x)
+        Q_y = Q[:, :, 1:, :] * edge_weight_y + Q[:, :, :-1, :] * (1 - edge_weight_y)
         
-        # Normalize
-        norm = F.avg_pool2d(edge_weight, kernel_size=3, stride=1, padding=1) + 1e-6
-        Q_bilateral = Q_bilateral / norm
+        # Pad back
+        Q_x = F.pad(Q_x, (1, 0, 0, 0), value=0)
+        Q_y = F.pad(Q_y, (0, 0, 1, 0), value=0)
         
-        return Q_bilateral
+        # Combine
+        filtered = (Q_x + Q_y) / 2.0
+        
+        return filtered
 
 
 class PiecewiseTrainedModel(nn.Module):
