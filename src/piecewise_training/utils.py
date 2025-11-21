@@ -137,9 +137,13 @@ def plot_training_history(history: dict, save_path: str = None) -> None:
     plt.close()
 
 
+
 class PolyLRScheduler:
     """
     Polynomial learning rate decay scheduler.
+    Implements: lr = base_lr * (1 - iter/max_iter)^power
+    
+    This is the standard scheduler used in DeepLab and the piecewise training paper.
     """
     def __init__(
         self,
@@ -154,10 +158,13 @@ class PolyLRScheduler:
         self.current_iter = 0
     
     def step(self):
-        """Update learning rate."""
+        """Update learning rate (call this EVERY iteration, not per epoch!)."""
         self.current_iter += 1
+        
+        # Compute decay factor: (1 - iter/max_iter)^power
         factor = (1 - self.current_iter / self.max_iterations) ** self.power
         
+        # Update LR for all parameter groups
         for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
             param_group['lr'] = base_lr * factor
     

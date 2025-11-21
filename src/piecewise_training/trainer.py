@@ -6,6 +6,7 @@ from typing import Dict, Optional, Callable
 import numpy as np
 from tqdm import tqdm
 from src.piecewise_training.losses import PiecewiseCRFLoss, UnaryLoss
+from src.piecewise_training.utils import PolyLRScheduler
 
 
 class PiecewiseTrainer:
@@ -33,7 +34,7 @@ class PiecewiseTrainer:
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.patience = patience  # ✅ Store patience
-
+        
         if class_weights is not None:
             class_weights = class_weights.to(device)
             print(f"✅ Using class weights (min={class_weights.min():.4f}, max={class_weights.max():.4f})")
@@ -94,42 +95,63 @@ class PiecewiseTrainer:
         )
     
     
+    
+    
     def train_stage1_unary(
         self,
         train_loader: DataLoader,
         num_epochs: int,
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
-        """Stage 1: Train unary network with UnaryLoss (Cross-Entropy)."""
-        print("Stage 1: Training Unary Network")
+        """
+        Stage 1: Train unary network with poly LR schedule.
         
+        Paper settings (Section 3.2):
+        - Base LR: 0.001
+        - Poly power: 0.9
+        - Optimizer: SGD with momentum 0.9
+        - LR decay: lr = base_lr × (1 - iter/max_iter)^0.9
+        """
+        print("=" * 70)
+        print("Stage 1: Training Unary Network (Following CVPR 2016 Paper)")
+        print("=" * 70)
+        print(f"   Base LR: {self.learning_rate}")
+        print(f"   Optimizer: SGD with momentum 0.9")
+        print(f"   LR Schedule: Poly (power=0.9)")
+        print(f"   Epochs: {num_epochs}")
+        print()
+        
+        # Freeze CRF if it exists
         if hasattr(self.model, 'crf'):
             for param in self.model.crf.parameters():
                 param.requires_grad = False
         
-        optimizer = self._get_optimizer(
-            self.model.unary_net.parameters(),
-            lr=1e-4
+        # ✅ Create SGD optimizer (as per paper)
+        optimizer = self._get_optimizer(self.model.unary_net.parameters())
+        
+        # ✅ Create poly scheduler (CRITICAL: per-iteration, not per-epoch!)
+        max_iterations = num_epochs * len(train_loader)
+        scheduler = PolyLRScheduler(
+            optimizer,
+            max_iterations=max_iterations,
+            power=0.9
         )
         
-        # ✅ FIX: Add learning rate warmup
-        def lr_lambda(epoch):
-            if epoch < 5:  # Warmup for first 5 epochs
-                return (epoch + 1) / 5
-            else:
-                return 0.1 ** ((epoch - 5) // 10)  # Decay every 10 epochs
-        
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        print(f"   Total iterations: {max_iterations}")
+        print(f"   Iterations per epoch: {len(train_loader)}")
+        print()
         
         history = {
             'train_loss': [],
             'val_loss': [],
             'val_miou': [],
-            'val_acc': []
+            'val_acc': [],
+            'lr': []
         }
         
+        best_miou = 0.0
+        
         for epoch in range(num_epochs):
-            # Training
             self.model.train()
             train_loss = 0.0
             
@@ -143,19 +165,30 @@ class PiecewiseTrainer:
                 # Forward pass (unary only)
                 unary_output, _ = self.model(images, apply_crf=False)
                 
-                # Compute loss
+                # ✅ Use unary loss (Equation 8 from paper)
                 loss = self.unary_loss(unary_output, labels)
+                
+                # Backward pass
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
+                # ✅ Gradient clipping (helps stability)
+                torch.nn.utils.clip_grad_norm_(self.model.unary_net.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
+                # ✅ CRITICAL: Step poly scheduler EVERY iteration!
+                scheduler.step()
+                
                 train_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
-                
-                
+                current_lr = optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'lr': f'{current_lr:.6f}'
+                })
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
+            history['lr'].append(optimizer.param_groups[0]['lr'])
             
             # Validation
             if val_loader is not None:
@@ -164,21 +197,26 @@ class PiecewiseTrainer:
                 history['val_miou'].append(val_metrics['miou'])
                 history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"Epoch {epoch+1}: "
-                    f"Train Loss={avg_train_loss:.4f}, "
-                    f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}, "
-                    f"Val Acc={val_metrics['pixel_acc']:.4f}, "
-                    f"LR={optimizer.param_groups[0]['lr']:.6f}")  # ✅ Show LR
+                print(f"\nEpoch {epoch+1}/{num_epochs}:")
+                print(f"   Train Loss: {avg_train_loss:.4f}")
+                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
+                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
+                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
+                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
                 
-                # Early stopping check
-                if self._early_stopping_check(history['val_miou'], patience=self.patience):
-                    print(f"Stopping at epoch {epoch+1}")
-                    break
+                # Track best model
+                if val_metrics['miou'] > best_miou:
+                    best_miou = val_metrics['miou']
+                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                
+                print()
             else:
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
-            
-            scheduler.step()
+                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                    f"LR={optimizer.param_groups[0]['lr']:.6f}")
+        
+        print(f"Stage 1 Complete! Best Val mIoU: {best_miou:.4f}")
+        print("=" * 70)
+        print()
         
         return history
     
@@ -206,9 +244,12 @@ class PiecewiseTrainer:
         
         # Optimizer for CRF only
         optimizer = self._get_optimizer(
-            self.model.crf.parameters(),
-            lr=1e-3
+        self.model.crf.parameters(),
+        lr=self.learning_rate * 0.1  # Lower learning rate for CRF
         )
+        
+        # ✅ Use plateau scheduler for Stage 2 (CRF is sensitive)
+        scheduler = self._get_scheduler(optimizer, num_epochs, mode='plateau')
         
         history = {
         'train_loss': [],
@@ -240,33 +281,52 @@ class PiecewiseTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.crf.parameters(), max_norm=1.0)
                 optimizer.step()
                 
+                # ✅ Step poly scheduler EVERY iteration
+                scheduler.step()
+
                 train_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
-                
-                
+                current_lr = optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'lr': f'{current_lr:.6f}'
+                })
+                    
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
+            history['lr'].append(optimizer.param_groups[0]['lr'])
             
             # Validation
             if val_loader is not None:
                 val_metrics = self.validate(val_loader, use_crf=True)
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
-                history['val_acc'].append(val_metrics['pixel_acc'])  # ✅ Add this
+                history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"Epoch {epoch+1}: "
-                    f"Train Loss={avg_train_loss:.4f}, "
-                    f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}, "
-                    f"Val Acc={val_metrics['pixel_acc']:.4f}")  # ✅ Add this
+                print(f"\nEpoch {epoch+1}/{num_epochs}:")
+                print(f"   Train Loss: {avg_train_loss:.4f}")
+                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
+                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
+                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
+                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
                 
-                # ✅ ADD EARLY STOPPING CHECK HERE
+                if val_metrics['miou'] > best_miou:
+                    best_miou = val_metrics['miou']
+                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                
+                # Early stopping
                 if self._early_stopping_check(history['val_miou'], patience=self.patience):
                     print(f"Stopping at epoch {epoch+1}")
                     break
+                
+                print()
             else:
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
+                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                    f"LR={optimizer.param_groups[0]['lr']:.6f}")
+        
+        print(f"Stage 2 Complete! Best Val mIoU: {best_miou:.4f}")
+        print("=" * 70)
+        print()
         
         return history
     
@@ -278,85 +338,122 @@ class PiecewiseTrainer:
         num_epochs: int,
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
-        """Stage 3: Joint fine-tuning with PiecewiseCRFLoss."""
-        print("\nStage 3: Joint Fine-tuning with Piecewise Loss")
+        """
+        Stage 3: Joint fine-tuning with poly LR schedule.
+        
+        Paper settings:
+        - Base LR: 0.00001 (100x lower than Stage 1)
+        - Poly power: 0.9
+        - Optimizer: SGD with momentum 0.9
+        """
+        print("=" * 70)
+        print("Stage 3: Joint Fine-tuning (Following CVPR 2016 Paper)")
+        print("=" * 70)
         
         # Unfreeze all parameters
         for param in self.model.parameters():
             param.requires_grad = True
         
-        # Optimizer for entire model
+        # ✅ Very low learning rate for fine-tuning
+        finetune_lr = self.learning_rate * 0.01  # 0.00001 if base is 0.001
         optimizer = self._get_optimizer(
             self.model.parameters(),
-            lr=self.learning_rate * 0.01  # Very low learning rate for fine-tuning
+            lr=finetune_lr
         )
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
         
-        # ✅ Gradient accumulation for effective larger batch size
-        accumulation_steps = 2  # Effective batch size = 8 × 2 = 16
+        # ✅ Use poly scheduler
+        max_iterations = num_epochs * len(train_loader)
+        scheduler = PolyLRScheduler(
+            optimizer,
+            max_iterations=max_iterations,
+            power=0.9
+        )
+        
+        print(f"   Base LR: {finetune_lr}")
+        print(f"   Optimizer: SGD with momentum 0.9")
+        print(f"   LR Schedule: Poly (power=0.9)")
+        print(f"   Total iterations: {max_iterations}")
+        print()
         
         history = {
-        'train_loss': [],
-        'val_loss': [],
-        'val_miou': [],
-        'val_acc': []  # ✅ Add this
+            'train_loss': [],
+            'val_loss': [],
+            'val_miou': [],
+            'val_acc': [],
+            'lr': []
         }
+        
+        best_miou = 0.0
         
         for epoch in range(num_epochs):
             self.model.train()
             train_loss = 0.0
-            optimizer.zero_grad()  # ✅ Initialize gradients once per epoch
             
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
             for batch_idx, (images, labels) in enumerate(pbar):
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 
+                optimizer.zero_grad()
+                
                 # Forward pass with CRF
                 unary_output, crf_output = self.model(images, apply_crf=True)
                 
-                # ✅ FIXED: Use piecewise loss (not structured_criterion)
+                # ✅ Use piecewise loss
                 if crf_output is not None:
                     loss = self.piecewise_loss(unary_output, crf_output, labels, images)
                 else:
                     loss = self.unary_loss(unary_output, labels)
                 
-                # Backward pass
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
                 
+                # ✅ Step poly scheduler EVERY iteration
+                scheduler.step()
+                
                 train_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
-            
-            # ✅ Handle remaining gradients if batch count not divisible by accumulation_steps
-            if len(train_loader) % accumulation_steps != 0:
-                optimizer.step()
-                optimizer.zero_grad()
+                current_lr = optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'lr': f'{current_lr:.6f}'
+                })
             
             avg_train_loss = train_loss / len(train_loader)
             history['train_loss'].append(avg_train_loss)
+            history['lr'].append(optimizer.param_groups[0]['lr'])
             
             # Validation
             if val_loader is not None:
                 val_metrics = self.validate(val_loader, use_crf=True)
                 history['val_loss'].append(val_metrics['loss'])
                 history['val_miou'].append(val_metrics['miou'])
-                history['val_acc'].append(val_metrics['pixel_acc'])  # ✅ Add this
+                history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"Epoch {epoch+1}: "
-                    f"Train Loss={avg_train_loss:.4f}, "
-                    f"Val Loss={val_metrics['loss']:.4f}, "
-                    f"Val mIoU={val_metrics['miou']:.4f}, "
-                    f"Val Acc={val_metrics['pixel_acc']:.4f}")  # ✅ Add this
+                print(f"\nEpoch {epoch+1}/{num_epochs}:")
+                print(f"   Train Loss: {avg_train_loss:.4f}")
+                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
+                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
+                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
+                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
                 
-                # ✅ ADD EARLY STOPPING CHECK HERE
+                if val_metrics['miou'] > best_miou:
+                    best_miou = val_metrics['miou']
+                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                
+                # Early stopping
                 if self._early_stopping_check(history['val_miou'], patience=self.patience):
                     print(f"Stopping at epoch {epoch+1}")
                     break
+                
+                print()
             else:
-                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}")
+                print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, "
+                    f"LR={optimizer.param_groups[0]['lr']:.6f}")
             
-            scheduler.step()
+        print(f"Stage 3 Complete! Best Val mIoU: {best_miou:.4f}")
+        print("=" * 70)
+        print()
         
         return history
     
@@ -381,6 +478,10 @@ class PiecewiseTrainer:
         
         total_loss = 0.0
         confusion_matrix = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
+
+         # ✅ ADD: Pixel accuracy tracking
+        correct_pixels = 0
+        total_pixels = 0
         
         with torch.no_grad():
             for images, labels in val_loader:
@@ -402,35 +503,29 @@ class PiecewiseTrainer:
                 
                 # Get predictions
                 predictions = output.argmax(dim=1)  # [B, H, W]
+
+                # ✅ ADD: Compute pixel accuracy
+                valid_mask = (labels != 255)
+                correct_pixels += ((predictions == labels) & valid_mask).sum().item()
+                total_pixels += valid_mask.sum().item()
                 
-                # ✅ FIX: Update confusion matrix correctly
-                # Flatten predictions and labels
-                pred_flat = predictions.cpu().numpy().flatten()
-                label_flat = labels.cpu().numpy().flatten()
-                
-                # Remove ignore index (255)
-                valid_mask = label_flat != 255
-                pred_flat = pred_flat[valid_mask]
-                label_flat = label_flat[valid_mask]
-                
-                # Update confusion matrix
-                for true_label in range(self.num_classes):
-                    for pred_label in range(self.num_classes):
-                        mask = (label_flat == true_label) & (pred_flat == pred_label)
-                        confusion_matrix[true_label, pred_label] += mask.sum()
+                # Update confusion matrix for mIoU
+                for pred, label in zip(predictions.cpu().numpy().flatten(), 
+                                    labels.cpu().numpy().flatten()):
+                    if label != 255:  # Ignore background
+                        confusion_matrix[label, pred] += 1
         
-        # Compute metrics
         avg_loss = total_loss / len(val_loader)
         miou = self._compute_miou(confusion_matrix)
         
-        # ✅ FIX: Compute pixel accuracy
-        pixel_acc = confusion_matrix.diagonal().sum() / confusion_matrix.sum()
+        # ✅ ADD: Compute pixel accuracy
+        pixel_accuracy = correct_pixels / total_pixels if total_pixels > 0 else 0.0
         
         return {
             'loss': avg_loss,
             'miou': miou,
-            'pixel_acc': pixel_acc,
-            'confusion_matrix': confusion_matrix
+            'pixel_acc': pixel_accuracy,  # ✅ ADD THIS
+            'confusion_matrix':confusion_matrix
         }
 
 
