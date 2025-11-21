@@ -7,92 +7,117 @@ from typing import Tuple, Optional, List
 class DeepLabV1Backbone(nn.Module):
     """
     DeepLab-style backbone with dilated convolutions.
-    Based on VGG-16 architecture.
+    Based on VGG-16 architecture with Batch Normalization.
     """
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int, pretrained: bool = True):
         super().__init__()
+        self.num_classes = num_classes
         
-        # VGG-16 style encoder with dilated convolutions
+        # ✅ SOLUTION: Add Batch Normalization after each conv layer
         self.features = nn.Sequential(
             # Block 1
             nn.Conv2d(3, 64, 3, padding=1),
+            nn.BatchNorm2d(64),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
             # Block 2
             nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
             # Block 3
             nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
-            # Block 4 (with dilation)
-            nn.Conv2d(256, 512, 3, padding=2, dilation=2),
+            # Block 4
+            nn.Conv2d(256, 512, 3, padding=1),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, stride=2),
             
-            # Block 5 (with dilation)
-            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
+            # Block 5 - with dilation
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=4, dilation=4),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
+            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
         )
         
-        # Classifier
+        # Classifier for unary potentials
         self.classifier = nn.Sequential(
-            nn.Conv2d(512, 1024, 3, padding=12, dilation=12),
+            nn.Conv2d(512, 1024, 3, padding=6, dilation=6),
+            nn.BatchNorm2d(1024),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.5),
             nn.Conv2d(1024, 1024, 1),
+            nn.BatchNorm2d(1024),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.5),
             nn.Conv2d(1024, num_classes, 1)
         )
-
-        # ✅ ADD PROPER INITIALIZATION
+        # ✅ ADD THIS: Proper weight initialization
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """
-        Initialize weights properly to prevent dead neurons.
-        """
+        """Initialize weights properly to prevent collapse."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # Kaiming initialization for ReLU activations
+                # ✅ Kaiming initialization for Conv layers
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
+                # ✅ BatchNorm initialization
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
         
-        # ✅ CRITICAL: Initialize final layer with small weights
-        # This prevents the model from being too confident initially
+        # ✅ CRITICAL: Initialize final classifier layer with small weights
+        # This prevents one class from dominating initially
         final_conv = self.classifier[-1]
         nn.init.normal_(final_conv.weight, mean=0, std=0.01)
-        nn.init.constant_(final_conv.bias, 0)
-        
+        if final_conv.bias is not None:
+            # ✅ Initialize bias to log(1/num_classes) for balanced predictions
+            nn.init.constant_(final_conv.bias, -torch.log(torch.tensor(self.num_classes, dtype=torch.float)))
+    
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.features(x)
-        x = self.classifier(x)
-        return x
-
+        """
+        Forward pass.
+        
+        Args:
+            x: Input tensor [B, 3, H, W]
+        Returns:
+            Unary potentials [B, num_classes, H/8, W/8]
+        """
+        features = self.features(x)
+        unary = self.classifier(features)
+        return unary
 
 
 class DenseCRF(nn.Module):

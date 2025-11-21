@@ -171,3 +171,19 @@ class PolyLRScheduler:
     def get_lr(self) -> List[float]:
         """Get current learning rates."""
         return [group['lr'] for group in self.optimizer.param_groups]
+    
+    def get_last_lr(self) -> List[float]:
+        """Get last learning rates (for compatibility with PyTorch schedulers)."""
+        return self.get_lr()
+    
+    def state_dict(self):
+        """Return scheduler state for checkpointing."""
+        return {
+            'current_iter': self.current_iter,
+            'base_lrs': self.base_lrs,
+        }
+    
+    def load_state_dict(self, state_dict):
+        """Load scheduler state from checkpoint."""
+        self.current_iter = state_dict['current_iter']
+        self.base_lrs = state_dict['base_lrs']

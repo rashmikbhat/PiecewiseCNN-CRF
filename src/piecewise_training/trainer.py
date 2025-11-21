@@ -197,17 +197,18 @@ class PiecewiseTrainer:
                 history['val_miou'].append(val_metrics['miou'])
                 history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"\nEpoch {epoch+1}/{num_epochs}:")
-                print(f"   Train Loss: {avg_train_loss:.4f}")
-                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
-                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
-                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
-                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
+                # ✅ Single-line compact format
+                print(f"Epoch {epoch+1}/{num_epochs}: "
+                    f"Train Loss={avg_train_loss:.4f} | "
+                    f"Val Loss={val_metrics['loss']:.4f} | "
+                    f"Val mIoU={val_metrics['miou']:.4f} | "
+                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 # Track best model
                 if val_metrics['miou'] > best_miou:
                     best_miou = val_metrics['miou']
-                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                    #print(f"   New best mIoU: {best_miou:.4f}")
                 
                 print()
             else:
@@ -303,16 +304,17 @@ class PiecewiseTrainer:
                 history['val_miou'].append(val_metrics['miou'])
                 history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"\nEpoch {epoch+1}/{num_epochs}:")
-                print(f"   Train Loss: {avg_train_loss:.4f}")
-                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
-                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
-                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
-                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
+                # ✅ Single-line compact format
+                print(f"Epoch {epoch+1}/{num_epochs}: "
+                    f"Train Loss={avg_train_loss:.4f} | "
+                    f"Val Loss={val_metrics['loss']:.4f} | "
+                    f"Val mIoU={val_metrics['miou']:.4f} | "
+                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 if val_metrics['miou'] > best_miou:
                     best_miou = val_metrics['miou']
-                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                    #print(f"   ✅ New best mIoU: {best_miou:.4f}")
                 
                 # Early stopping
                 if self._early_stopping_check(history['val_miou'], patience=self.patience):
@@ -430,16 +432,17 @@ class PiecewiseTrainer:
                 history['val_miou'].append(val_metrics['miou'])
                 history['val_acc'].append(val_metrics['pixel_acc'])
                 
-                print(f"\nEpoch {epoch+1}/{num_epochs}:")
-                print(f"   Train Loss: {avg_train_loss:.4f}")
-                print(f"   Val Loss:   {val_metrics['loss']:.4f}")
-                print(f"   Val mIoU:   {val_metrics['miou']:.4f}")
-                print(f"   Val Acc:    {val_metrics['pixel_acc']:.4f}")
-                print(f"   LR:         {optimizer.param_groups[0]['lr']:.6f}")
+                # ✅ Single-line compact format
+                print(f"Epoch {epoch+1}/{num_epochs}: "
+                    f"Loss={avg_train_loss:.4f} | "
+                    f"Val Loss={val_metrics['loss']:.4f} | "
+                    f"Val mIoU={val_metrics['miou']:.4f} | "
+                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 if val_metrics['miou'] > best_miou:
                     best_miou = val_metrics['miou']
-                    print(f"   ✅ New best mIoU: {best_miou:.4f}")
+                    #print(f"   ✅ New best mIoU: {best_miou:.4f}")
                 
                 # Early stopping
                 if self._early_stopping_check(history['val_miou'], patience=self.patience):
