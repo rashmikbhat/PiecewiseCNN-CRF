@@ -4,120 +4,143 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, List
 
 
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
+
 class DeepLabV1Backbone(nn.Module):
     """
-    DeepLab-style backbone with dilated convolutions.
-    Based on VGG-16 architecture with Batch Normalization.
+    DeepLab-style backbone following Lin et al. CVPR 2016.
+    
+    Paper (Section 7, Page 6):
+    "The first 5 convolution blocks and the first convolution layer 
+    in the 6th convolution block are initialized from the VGG-16 network [42]."
+    
+    [42] = VGG-16 pre-trained on ImageNet (Simonyan & Zisserman, ICLR 2015)
     """
     def __init__(self, num_classes: int, pretrained: bool = True):
         super().__init__()
         self.num_classes = num_classes
         
-        # ✅ SOLUTION: Add Batch Normalization after each conv layer
-        self.features = nn.Sequential(
+        if pretrained:
+            print("="*70)
+            print("Loading VGG-16 Pre-trained Weights")
+            print("(Lin et al. CVPR 2016, Section 7)")
+            print("="*70)
+            
+            # ✅ Load official VGG-16 with ImageNet weights
+            vgg16 = models.vgg16(pretrained=True)
+            
+            # ✅ Extract first 5 conv blocks (as per paper)
+            self.features = nn.Sequential()
+            
+            # Conv blocks 1-5 (indices 0-30 in VGG-16)
+            for i in range(31):  # Up to and including conv5_3
+                self.features.add_module(str(i), vgg16.features[i])
+            
+            # ✅ Modify pool4 and pool5 (stride 2→1, as per paper)
+            # pool4 is at index 23
+            self.features[23] = nn.MaxPool2d(kernel_size=2, stride=1, padding=1)
+            # pool5 is at index 30
+            self.features[30] = nn.MaxPool2d(kernel_size=2, stride=1, padding=1)
+            
+            print("✅ Loaded ImageNet weights for conv1-conv5")
+            print("   Modified pool4/pool5: stride 2→1")
+            print("="*70)
+        else:
+            print("⚠️  WARNING: Using random initialization")
+            print("   Paper uses VGG-16 pre-trained on ImageNet!")
+            self.features = self._build_from_scratch()
+        
+        # ✅ Conv Block 6 (fc6 converted to conv, as per paper)
+        # Paper: "fc6 converted to conv with dilation 12"
+        self.conv6 = nn.Sequential(
+            nn.Conv2d(512, 4096, kernel_size=7, padding=12, dilation=12),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.5)
+        )
+        
+        # ✅ Classifier (fc7 + final conv)
+        self.classifier = nn.Sequential(
+            nn.Conv2d(4096, 4096, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.5),
+            nn.Conv2d(4096, num_classes, kernel_size=1)
+        )
+        
+        # Initialize new layers
+        self._initialize_new_layers()
+    
+    def _build_from_scratch(self):
+        """Build VGG-16 features from scratch (NOT recommended!)."""
+        return nn.Sequential(
             # Block 1
             nn.Conv2d(3, 64, 3, padding=1),
-            nn.BatchNorm2d(64),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, 3, padding=1),
-            nn.BatchNorm2d(64),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
             # Block 2
             nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
             # Block 3
             nn.Conv2d(128, 256, 3, padding=1),
-            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, stride=2),
             
             # Block 4
             nn.Conv2d(256, 512, 3, padding=1),
-            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(512, 512, 3, padding=1),
-            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
             nn.Conv2d(512, 512, 3, padding=1),
-            nn.BatchNorm2d(512),  # ✅ ADDED
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, stride=2),
+            nn.MaxPool2d(2, stride=1, padding=1),  # ✅ stride 1!
             
-            # Block 5 - with dilation
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.BatchNorm2d(512),  # ✅ ADDED
+            # Block 5
+            nn.Conv2d(512, 512, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.BatchNorm2d(512),  # ✅ ADDED
+            nn.Conv2d(512, 512, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.BatchNorm2d(512),  # ✅ ADDED
+            nn.Conv2d(512, 512, 3, padding=1),
             nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, stride=1, padding=1),  # ✅ stride 1!
         )
-        
-        # Classifier for unary potentials
-        self.classifier = nn.Sequential(
-            nn.Conv2d(512, 1024, 3, padding=6, dilation=6),
-            nn.BatchNorm2d(1024),  # ✅ ADDED
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(1024, 1024, 1),
-            nn.BatchNorm2d(1024),  # ✅ ADDED
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(1024, num_classes, 1)
-        )
-        # ✅ ADD THIS: Proper weight initialization
-        self._initialize_weights()
     
-    def _initialize_weights(self):
-        """Initialize weights properly to prevent collapse."""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                # ✅ Kaiming initialization for Conv layers
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                # ✅ BatchNorm initialization
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-        
-        # ✅ CRITICAL: Initialize final classifier layer with small weights
-        # This prevents one class from dominating initially
-        final_conv = self.classifier[-1]
-        nn.init.normal_(final_conv.weight, mean=0, std=0.01)
-        if final_conv.bias is not None:
-            # ✅ Initialize bias to log(1/num_classes) for balanced predictions
-            nn.init.constant_(final_conv.bias, -torch.log(torch.tensor(self.num_classes, dtype=torch.float)))
-    
+    def _initialize_new_layers(self):
+        """Initialize conv6 and classifier (not pre-trained)."""
+        for m in [self.conv6, self.classifier]:
+            for layer in m.modules():
+                if isinstance(layer, nn.Conv2d):
+                    nn.init.normal_(layer.weight, mean=0, std=0.01)
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
+        x = self.features(x)
+        x = self.conv6(x)
+        x = self.classifier(x)
         
-        Args:
-            x: Input tensor [B, 3, H, W]
-        Returns:
-            Unary potentials [B, num_classes, H/8, W/8]
-        """
-        features = self.features(x)
-        unary = self.classifier(features)
-        return unary
+        # Upsample to input size (1/8 → 1/1)
+        x = F.interpolate(
+            x,
+            size=(x.size(2) * 8, x.size(3) * 8),
+            mode='bilinear',
+            align_corners=True
+        )
+        
+        return x
 
 
 class DenseCRF(nn.Module):
@@ -299,14 +322,15 @@ class PiecewiseTrainedModel(nn.Module):
         self,
         num_classes: int,
         crf_iterations: int = 10,
-        use_crf: bool = True
+        use_crf: bool = True,
+        pretrained:bool=True
     ):
         super().__init__()
         self.num_classes = num_classes
         self.use_crf = use_crf
         
         # Unary network (CNN)
-        self.unary_net = DeepLabV1Backbone(num_classes)
+        self.unary_net = DeepLabV1Backbone(num_classes=num_classes, pretrained=pretrained)
         
         # CRF layer
         if use_crf:

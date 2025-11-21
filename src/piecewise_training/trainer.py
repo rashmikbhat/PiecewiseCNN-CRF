@@ -38,8 +38,8 @@ class PiecewiseTrainer:
         if class_weights is not None:
             class_weights = class_weights.to(device)
             print(f"✅ Using class weights (min={class_weights.min():.4f}, max={class_weights.max():.4f})")
-        else:
-            print("⚠️  WARNING: No class weights provided - may struggle with imbalanced data!")
+        #else:
+            #print("⚠️  WARNING: No class weights provided - may struggle with imbalanced data!")
         
         self.unary_loss = UnaryLoss(ignore_index=255,class_weights=class_weights)  # Stage 1
         self.piecewise_loss = PiecewiseCRFLoss(  # Stage 2 & 3
@@ -131,10 +131,13 @@ class PiecewiseTrainer:
         
         # ✅ Create poly scheduler (CRITICAL: per-iteration, not per-epoch!)
         max_iterations = num_epochs * len(train_loader)
+        warmup_iterations=min(500,max_iterations//10)
         scheduler = PolyLRScheduler(
             optimizer,
             max_iterations=max_iterations,
-            power=0.9
+            power=0.9,
+            warmup_iterations=warmup_iterations,
+            min_lr=1e-6
         )
         
         print(f"   Total iterations: {max_iterations}")
@@ -249,16 +252,26 @@ class PiecewiseTrainer:
         lr=self.learning_rate * 0.1  # Lower learning rate for CRF
         )
         
-        # ✅ Use plateau scheduler for Stage 2 (CRF is sensitive)
-        scheduler = self._get_scheduler(optimizer, num_epochs, mode='plateau')
+        max_iterations = num_epochs * len(train_loader)
+        warmup_iterations = min(500, max_iterations // 10)
+        scheduler = PolyLRScheduler(
+            optimizer,
+            max_iterations=max_iterations,
+            power=0.9,
+            warmup_iterations=warmup_iterations,
+            min_lr=1e-7
+        )
         
         history = {
         'train_loss': [],
         'val_loss': [],
         'val_miou': [],
-        'val_acc': []  # ✅ Add this
+        'val_acc': [],
+        'lr': []
         }
         
+        best_miou=0.0
+
         for epoch in range(num_epochs):
             self.model.train()
             train_loss = 0.0
@@ -368,7 +381,8 @@ class PiecewiseTrainer:
         scheduler = PolyLRScheduler(
             optimizer,
             max_iterations=max_iterations,
-            power=0.9
+            power=0.9,
+            min_lr=1e-7
         )
         
         print(f"   Base LR: {finetune_lr}")

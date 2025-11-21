@@ -149,11 +149,15 @@ class PolyLRScheduler:
         self,
         optimizer: torch.optim.Optimizer,
         max_iterations: int,
-        power: float = 0.9
+        power: float = 0.9,
+        warmup_iterations: int=0,
+        min_lr: float = 1e-6
     ):
         self.optimizer = optimizer
         self.max_iterations = max_iterations
         self.power = power
+        self.warmup_iterations = warmup_iterations
+        self.min_lr = min_lr
         self.base_lrs = [group['lr'] for group in optimizer.param_groups]
         self.current_iter = 0
     
@@ -161,12 +165,21 @@ class PolyLRScheduler:
         """Update learning rate (call this EVERY iteration, not per epoch!)."""
         self.current_iter += 1
         
-        # Compute decay factor: (1 - iter/max_iter)^power
-        factor = (1 - self.current_iter / self.max_iterations) ** self.power
-        
-        # Update LR for all parameter groups
-        for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
-            param_group['lr'] = base_lr * factor
+        if self.current_iter <= self.warmup_iterations:
+            # Linear warmup
+            warmup_factor = self.current_iter / self.warmup_iterations
+            for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                param_group['lr'] = base_lr * warmup_factor
+        else:
+            # Poly decay
+            adjusted_iter = self.current_iter - self.warmup_iterations
+            adjusted_max = self.max_iterations - self.warmup_iterations
+            factor = (1 - adjusted_iter / adjusted_max) ** self.power
+            
+            for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                # ✅ CRITICAL: Clamp LR to min_lr
+                new_lr = max(base_lr * factor, self.min_lr)
+                param_group['lr'] = new_lr
     
     def get_lr(self) -> List[float]:
         """Get current learning rates."""
