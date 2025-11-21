@@ -202,7 +202,7 @@ class PiecewiseTrainer:
                     f"Train Loss={avg_train_loss:.4f} | "
                     f"Val Loss={val_metrics['loss']:.4f} | "
                     f"Val mIoU={val_metrics['miou']:.4f} | "
-                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f} | "
                     f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 # Track best model
@@ -309,7 +309,7 @@ class PiecewiseTrainer:
                     f"Train Loss={avg_train_loss:.4f} | "
                     f"Val Loss={val_metrics['loss']:.4f} | "
                     f"Val mIoU={val_metrics['miou']:.4f} | "
-                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f} | "
                     f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 if val_metrics['miou'] > best_miou:
@@ -437,7 +437,7 @@ class PiecewiseTrainer:
                     f"Loss={avg_train_loss:.4f} | "
                     f"Val Loss={val_metrics['loss']:.4f} | "
                     f"Val mIoU={val_metrics['miou']:.4f} | "
-                    f"Val Acc={val_metrics.get('accuracy', 0):.4f} | "
+                    f"Val Acc={val_metrics['pixel_acc']:.4f} | "
                     f"LR={scheduler.get_last_lr()[0]:.6f}")
                 
                 if val_metrics['miou'] > best_miou:
@@ -462,27 +462,27 @@ class PiecewiseTrainer:
     
     
     
+    
     def validate(
         self,
         val_loader: DataLoader,
         use_crf: bool = True
     ) -> Dict[str, float]:
         """
-        Validate the model on validation set.
+        Validate the model.
         
         Args:
             val_loader: Validation data loader
-            use_crf: Whether to use CRF refinement
+            use_crf: Whether to use CRF for inference
         
         Returns:
             Dictionary with validation metrics
         """
         self.model.eval()
-        
         total_loss = 0.0
-        confusion_matrix = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
-
-         # ✅ ADD: Pixel accuracy tracking
+        confusion_matrix = np.zeros((self.num_classes, self.num_classes))
+        
+        # ✅ ADD: Track pixel accuracy
         correct_pixels = 0
         total_pixels = 0
         
@@ -493,42 +493,43 @@ class PiecewiseTrainer:
                 
                 # Forward pass
                 unary_output, crf_output = self.model(images, apply_crf=use_crf)
-                
-                # Use CRF output if available, otherwise unary
-                if use_crf and crf_output is not None:
-                    output = crf_output
-                else:
-                    output = unary_output
+                output = crf_output if (use_crf and crf_output is not None) else unary_output
                 
                 # Compute loss
                 loss = self.criterion(output, labels)
                 total_loss += loss.item()
                 
                 # Get predictions
-                predictions = output.argmax(dim=1)  # [B, H, W]
-
-                # ✅ ADD: Compute pixel accuracy
-                valid_mask = (labels != 255)
-                correct_pixels += ((predictions == labels) & valid_mask).sum().item()
+                preds = output.argmax(1)
+                
+                # ✅ FIXED: Compute pixel accuracy correctly
+                valid_mask = labels != 255  # Ignore index
+                correct_pixels += ((preds == labels) & valid_mask).sum().item()
                 total_pixels += valid_mask.sum().item()
                 
-                # Update confusion matrix for mIoU
-                for pred, label in zip(predictions.cpu().numpy().flatten(), 
-                                    labels.cpu().numpy().flatten()):
-                    if label != 255:  # Ignore background
-                        confusion_matrix[label, pred] += 1
+                # Update confusion matrix
+                for i in range(images.size(0)):
+                    pred_i = preds[i].cpu().numpy().flatten()
+                    label_i = labels[i].cpu().numpy().flatten()
+                    valid_i = label_i != 255
+                    
+                    pred_i = pred_i[valid_i]
+                    label_i = label_i[valid_i]
+                    
+                    for p, l in zip(pred_i, label_i):
+                        confusion_matrix[l, p] += 1
         
         avg_loss = total_loss / len(val_loader)
         miou = self._compute_miou(confusion_matrix)
         
-        # ✅ ADD: Compute pixel accuracy
-        pixel_accuracy = correct_pixels / total_pixels if total_pixels > 0 else 0.0
+        # ✅ FIXED: Compute pixel accuracy
+        pixel_acc = correct_pixels / total_pixels if total_pixels > 0 else 0.0
         
         return {
             'loss': avg_loss,
             'miou': miou,
-            'pixel_acc': pixel_accuracy,  # ✅ ADD THIS
-            'confusion_matrix':confusion_matrix
+            'pixel_acc': pixel_acc,  # ✅ Changed key name for consistency
+            'confusion_matrix': confusion_matrix
         }
 
 
