@@ -132,9 +132,9 @@ class UnaryLoss(nn.Module):
     """
     Simple unary loss (Cross-Entropy) for Stage 1.
     """
-    def __init__(self, ignore_index: int = 255):
+    def __init__(self, ignore_index: int = 255, class_weights: Optional[torch.Tensor] = None):
         super().__init__()
-        self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
     
     def forward(self, predictions: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return self.criterion(predictions, target)

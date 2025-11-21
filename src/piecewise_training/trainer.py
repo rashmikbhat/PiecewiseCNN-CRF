@@ -36,8 +36,11 @@ class PiecewiseTrainer:
 
         if class_weights is not None:
             class_weights = class_weights.to(device)
+            print(f"✅ Using class weights (min={class_weights.min():.4f}, max={class_weights.max():.4f})")
+        else:
+            print("⚠️  WARNING: No class weights provided - may struggle with imbalanced data!")
         
-        self.unary_loss = UnaryLoss(ignore_index=255)  # Stage 1
+        self.unary_loss = UnaryLoss(ignore_index=255,class_weights=class_weights)  # Stage 1
         self.piecewise_loss = PiecewiseCRFLoss(  # Stage 2 & 3
             num_classes=num_classes,
             unary_weight=1.0,
@@ -186,10 +189,8 @@ class PiecewiseTrainer:
         num_epochs: int,
         val_loader: Optional[DataLoader] = None
     ) -> Dict[str, list]:
-        """
-        Stage 2: Fix unary network, train CRF parameters with structured loss.
-        """
-        print("\nStage 2: Training CRF Parameters with Structured Loss")
+        """Stage 2: Train CRF parameters with PiecewiseCRFLoss."""
+        print("\nStage 2: Training CRF Parameters with Piecewise Loss")
         
         if not hasattr(self.model, 'crf'):
             print("Model has no CRF, skipping stage 2")
