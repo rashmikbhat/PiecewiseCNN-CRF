@@ -32,27 +32,9 @@ This repository contains a **from-scratch implementation** of the CVPR 2016 pape
 The paper introduces a **novel piecewise training approach** for combining Convolutional Neural Networks (CNNs) with Conditional Random Fields (CRFs) for semantic segmentation. Unlike traditional joint training, this method trains the model in **three distinct stages**:
 
 ### Three-Stage Training Pipeline
-
-┌─────────────────────────────────────────────────────────────┐
-│  Stage 1: Train Unary Network (CNN)                         │
-│  ├─ 20 epochs (50 min)                                      │
-│  ├─ Learn pixel-wise features                               │
-│  └─ Output: Unary potentials [B, C, H, W]                   │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Stage 2: Train CRF Parameters (Fixed CNN)                  │
-│  ├─ 4-5 epochs (28 min)                                     │
-│  ├─ Learn spatial smoothness                                │
-│  └─ Output: Learnable Gaussian kernels                      │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Stage 3: Joint Fine-tuning (End-to-End)                    │
-│  ├─ 8-10 epochs (~2 hours)                                  │
-│  ├─ Optimize entire pipeline                                │
-│  └─ Output: Final segmentation model                        │
-└─────────────────────────────────────────────────────────────┘
+Stage 1: Train Unary Network (CNN)  
+Stage 2: Train CRF Parameters (Fixed CNN) 
+Stage 3: Joint Fine-tuning (End-to-End)
 
 
 ### Why Piecewise Training?
@@ -82,8 +64,6 @@ The paper introduces a **novel piecewise training approach** for combining Convo
 ### Loss Functions
 - ✅ **Cross-Entropy Loss** for unary training
 - ✅ **Structured Loss** combining unary and pairwise terms
-- ✅ **Dice Loss** (optional) for class imbalance
-- ✅ **Focal Loss** (optional) for hard examples
 
 ### Evaluation Metrics
 - ✅ **Mean Intersection over Union (mIoU)**
@@ -290,13 +270,6 @@ Everything else works automatically!
 
 Attribution (100)
 # 🎓 Training
-Recommended Configuration
-| Configuration | Stage 1 | Stage 2 | Stage 3 | Total Time | Expected mIoU |
-|--------------|---------|---------|---------|------------|---------------|
-| **Quick Test** | 10 | 2 | 4 | ~2 hours | 35-40% |
-| **Recommended** ✅ | 20 | 4 | 8 | ~5 hours | 45-55% |
-| **Paper-Level** | 25 | 5 | 10 | ~10 hours | 55-65% |
-
 Training from Python Script
 If you prefer not to use the notebook:
 from src.piecewise_training.model import PiecewiseTrainedModel
