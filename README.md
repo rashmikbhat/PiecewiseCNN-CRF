@@ -33,7 +33,7 @@ The paper introduces a **novel piecewise training approach** for combining Convo
 
 ### Three-Stage Training Pipeline
 Stage 1: Train Unary Network (CNN)  
-Stage 2: Train CRF Parameters (Fixed CNN) 
+Stage 2: Train CRF Parameters (Fixed CNN)   
 Stage 3: Joint Fine-tuning (End-to-End)
 
 
