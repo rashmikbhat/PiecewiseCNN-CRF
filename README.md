@@ -41,9 +41,9 @@ Stage 3: Joint Fine-tuning (End-to-End)
 
 | Approach | Convergence | Stability | Final mIoU |
 |----------|-------------|-----------|------------|
-| **Joint Training** | Slow (50+ epochs) | Unstable | 40-45% |
+| **Joint Training** | Slow  | Unstable | 40-45% |
 | **Independent Training** | Fast | Stable | 35-40% |
-| **Piecewise Training** ✅ | Fast (32 epochs) | Very Stable | **50-60%** |
+| **Piecewise Training** ✅ | Fast  | Very Stable | **50-60%** |
 
 ---
 
