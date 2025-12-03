@@ -7,7 +7,7 @@
 This repository contains a **from-scratch implementation** of the CVPR 2016 paper ["Efficient Piecewise Training of Deep Structured Models for Semantic Segmentation"](https://arxiv.org/abs/1504.01013) by Lin et al.
 
 
-# 🎯 Overview
+# Overview
 
 The paper introduces a **novel piecewise training approach** for combining Convolutional Neural Networks (CNNs) with Conditional Random Fields (CRFs) for semantic segmentation. Unlike traditional joint training, this method trains the model in **three distinct stages**:
 
@@ -17,7 +17,7 @@ Stage 2: Train CRF Parameters (Fixed CNN)
 Stage 3: Joint Fine-tuning (End-to-End)
 ---
 
-# ✨ Key Features
+# Key Features
 
 ### Model Architecture
 -  **DeepLab-style backbone** with dilated convolutions for dense prediction
